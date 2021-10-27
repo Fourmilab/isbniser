@@ -1,0 +1,165 @@
+
+                                ISBNiser
+                             Development Log
+
+2008 January 2
+
+Initial release, version 1.0.
+
+2008 October 12
+
+Fixed ISBN-13 check digit computation whose correct ISBN-10
+check digit was zero.
+
+2015 October 6
+
+Added generation of Amazon links with credit to a primary or
+alternative associate account.  Version 1.1.
+
+2017 October 10
+
+Added configuration for primary and alternative Amazon accounts
+and Web sites either within the program or by command line
+options.  Version 1.2.
+
+2017 October 23
+
+Added Library of Congress algorithm for hyphenation of ISBNs.
+Version 1.3.
+
+2018 October 18
+
+Began development of version 1.4.
+
+The main focus of 1.4 is the replacement of the ad hoc
+hyphenation code for ISBNs derived from a U.S. Library of
+Congress page which may be good enough for government work but
+doesn't meet Fourmilab's standards.  It's just a regular
+expression hack which handles only a fraction of the actual ISBN
+registration groups and their particular ranges for separating
+registrant and publication numbers.
+
+The new code imports the authoritative database from the keepers
+of ISBN in XML form from:
+    https://www.isbn-international.org/range_file_generation
+(There isn't a direct download link; you have to select XML
+format from the form on this page and then download.)
+
+The XML file is processed with a new Perl program,
+parse_range_xml.pl, which compiles it into a Perl array
+definition in isbn_range.pl which is then included in the
+development version of isbniser.pl with a do statement.
+
+This array is then used by a completely rewritten hyphenate()
+function, which has the same calling sequence of the previous
+version, but handles every case of ISBN defined by the master
+table.
+
+Separating the processing of the XML table into an independent
+Perl program means that isbniser itself is not dependent on the
+Perl module XML::Parser (which parse_range_xml.pl requires).
+This preserves the ability of isbniser to run out of the box on
+a "bare metal" Perl installation without any optional modules.
+
+Using the master ISBN database allows identification of the ISBN
+registration group by name.  A new "-g" option displays this
+along with the interpreted ISBN information.
+
+The ISBN range database is kept separate from the source code of
+isbniser.pl for maintenance reasons, but to preserve the easy
+installation of the program in a directory on a user's PATH, I
+added a new utility, makemono.pl, which constructs a monolithic
+isbniser executable in which the database is embedded.  All of
+this is done automatically by the Makefile when the distribution
+archive is prepared.  All the user need do is copy isbniser into
+a directory on the PATH and it just works: no dependencies,
+support files, or module installations are required.
+
+The calculation of ISBN-13 check digits by ISBN_13_check() would
+return a value of 10 if the check digit sum modulo 10 came out
+zero.  It forgot to perform a second mod 10 operation to map a
+sum of 10 into 0.  Because validate_ISBN_13() has its own
+validation algorithm which doesn't directly compute the check
+digit, it was not affected, so this only caused problems when
+generating ISBN-13 values from ISBN-10 arguments.  It's fixed
+now.
+
+Updated the "make check" sequence to test both the development
+(isbniser.pl) and production (isbniser) programs.
+
+Updated "make lint" to test both the development and production
+programs.
+
+Updated "make dist" to force a re-build of isbn_range.pl and
+isbniser before creating the distribution archive.
+
+2018 October 22
+
+Updated the CSS validation link in index.html so it works if the
+document is accessed via a https: URL.
+
+Built the version 1.4 distribution for release.
+
+2018 October 30
+
+Downloaded an update ISBN Range database and integrated
+into the program.  There were some changes for the French
+language and Iran registration groups.
+
+2018 October 31
+
+Integrated the code from the version developed for use by
+ISBNquest to support the "-d" option for CSV format output.
+
+Added test cases to the Makefile "make check" target to test CSV
+format output.
+
+2018 November 2
+
+Added this file (log.txt) to the distribution archive.
+
+Built the version 1.5 distribution for release.
+
+2020 May 8
+
+Began development of version 1.6.
+
+Downloaded the latest ISBN Range database in XML.  This version
+is dated 2020-05-06 and updates the database used in 1.5,
+which was dated 2018-10-30.  The differences are relatively
+minor, affecting agency declarations for:
+    Benin, Bolivia, El Salvador, Estonia, Kenya, Malta,
+    Mongolia, North Macedonia, Sri Lanka, Turkey,
+    United States, Uruguay
+The previous agency for Macedonia was deleted and replaced with
+North Macedonia.
+
+Prepared version 1.6 for release.
+
+2021 October 27
+
+Downloaded the latest ISBN Range database in XML.  This version is
+dated 2021-10-27 and updates the database used in 1.6, which was dated
+2020-05-06.  The differences are intermediate in scope, affecting
+agency declarations for:
+    Argentina, Benin, Bhutan, Brazil, China, Colombia, Ecuador, English
+    language, Ghana, Guatemala, Indonesia, Iran, Italy, Luxembourg,
+    Macau, Malaysia, Montenegro, Morocco, Myanmar, Namibia, Pakistan,
+    Paraguay, Peru, Portugal, Romania, Spain, Sri Lanka, Sudan, Taiwan,
+    Tajikistan, Tanzania, Turkey, Uganda, United States, ia
+
+Created Git repository, committed the version 1.7 files.
+
+Logged on to github.com.
+
+Created a new repository:
+    isbniser
+with access URLs:
+    HTTPS: https://github.com/Fourmilab/isbniser.git
+    SSH:   git@github.com:Fourmilab/isbniser.git
+
+Linked the local repository to the GitHub archive:
+    git remote add origin git@github.com:Fourmilab/isbniser.git
+
+Prepared version 1.7 for release.
+

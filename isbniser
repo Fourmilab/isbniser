@@ -1,0 +1,1972 @@
+#! /usr/bin/perl
+
+#               Transform ISBN-10 <=> ISBN-13
+
+#              by John Walker  --  January 2008
+#                 Version 1.1  --  October 2015
+#                 Version 1.2  --  October 2017
+#                 Version 1.3  --  October 2017
+#                 Version 1.4  --  October 2018
+#                 Version 1.5  --  October 2018
+#                 Version 1.6  --  May 2020
+#                 Version 1.7  --  October 2021
+
+    my $Version = '1.7 (October 2021)';
+
+#   This program parses ISBN-10 and ISBN-13 specifications from
+#   the command line (either, intermixed in any order), validates
+#   them and, if valid, emits the code in both ISBN-10 and ISBN-13
+#   form (an ISBN-13 which cannot be transformed into an ISBN-10
+#   is identified as "Unmappable").  ISBNs may be specified with
+#   any delimiter; the delimiter is preserved in the transformed
+#   number.  Output is in both delimited and "canonical" form
+#   without any delimiters.
+
+#   Sample run:
+
+#   ./isbniser.pl 0-309-09657-X 0.309.09657.X 1844135438 \
+#       9780385611015 978-0-471-64877-2 978.0.471.64877.2 \
+#       979-0-471-64877-1 1844135437
+#ISBN-10:        0-309-09657-X     030909657X  ISBN-13:  9780309096577     978-0-309-09657-7
+#ISBN-10:        0.309.09657.X     030909657X  ISBN-13:  9780309096577     978.0.309.09657.7
+#ISBN-10:           1844135438     1844135438  ISBN-13:  9781844135431         9781844135431
+#ISBN-13:        9780385611015  9780385611015  ISBN-10:     0385611013            0385611013
+#ISBN-13:    978-0-471-64877-2  9780471648772  ISBN-10:     0471648779         0-471-64877-9
+#ISBN-13:    978.0.471.64877.2  9780471648772  ISBN-10:     0471648779         0.471.64877.9
+#ISBN-13:    979-0-471-64877-1  9790471648771  ISBN-10:     Unmappable
+#Invalid ISBN: 1844135437
+#
+#   If you specify "-n" on the command line, subsequent ISBNs will not
+#   be verified.  You can use this to generate URLs for Amazon ASINs.
+#   Specifying "-v" turns ISBN verification back on for subsequent
+#   arguments.
+
+#   Set $Amazon to the site to which Amazon links should be
+#   directed (www.amazon.com, www.amazon.co.uk, www.amazon.co.jp,
+#   etc.).  If it's set to the null string, no Amazon links
+#   are generated.  You can override this setting with the the
+#   -a<sitename> option, which affects all subsequent arguments.
+
+    my $Amazon = 'www.amazon.com';
+
+#   If you have an Amazon associates account and you'd like the
+#   Amazon link to credit it, specify it below.  Otherwise, leave
+#   $credit set to the null string.  You can change the credit
+#   account with the -c<account> option, which affects all
+#   subsequent arguments.
+
+    my $credit = 'assoc-acct';
+
+#   When the -r option is specified, the following alternative Amazon
+#   associates account is used instead of $credit.  You can specify
+#   any account with the -c<account> option, but the -r option allows
+#   you to choose a frequently-used alternative account without having
+#   to enter it on the command line.
+
+    my $creditR = 'secondary-acct';
+
+    use strict;
+    use warnings;
+
+    my $noval = 0;
+    my $hyphenate = 1;
+    my $showRegGroup = 0;
+    my $csv = 0;
+
+    #   Status codes
+    #
+    #       200     Normal, ISBN-13 and ISBN-10 returned
+    #       201     Normal, ISBN-13 returned, 979- unmappable to ISBN-10
+    #       300     Invalid registration group, unhyphenated ISBN-13 and ISBN-10 returned
+    #       301     Invalid registration group, unhyphenated 979- ISBN-13 returned
+    my $status = 200;               # Request processing status
+
+    #       401     Incorrect length (not 10 or 13 characters)
+    #       402     Illegal character
+    #       403     "X" as other than last character of ISBN-10
+    #       404     Checksum incorrect
+    #       405     ISBN-13 prefix is not Bookland (978 or 979)
+    my $auxstat10 = 0;              # ISBN-10 auxiliary status
+    my $auxstat13 = 0;              # ISBN-13 auxiliary status
+
+    our @ISBN_range;
+    our $ISBN_database_date;
+    define_ISBN_ranges();           # Load ISBN range table
+    my $registrationGroup = '';     # Registration group returned by hyphenate()
+
+    help() if scalar(@ARGV) == 0;
+
+    for my $s (@ARGV) {
+        if ($s =~ m/\-a(.*)$/) {
+            $Amazon = $1;
+            next;
+        } elsif ($s =~ m/\-c(.*)$/) {
+            $credit = $1;
+            next;
+        } elsif ($s eq '-d') {
+            $csv = 1;
+            next;
+        } elsif ($s eq '-g') {
+            $showRegGroup = 1;
+            next;
+        } elsif ($s eq '-n') {
+            $noval = 1;
+            next;
+        } elsif ($s eq '-p') {
+            $hyphenate = 0;
+            next;
+        } elsif ($s eq '-r') {
+            $credit = $creditR;
+            next;
+        } elsif (($s eq '-u') || ($s =~ m/^\-\-h/)) {
+            help();
+        } elsif ($s eq '-v') {
+            $noval = 0;
+            next;
+        }
+        if ($noval) {
+            printf("ISBN-10: %20s  %13s\n", $s, $s);
+            if ($Amazon ne '') {
+                printf("http://$Amazon/dp/$s/%s\n", credit());
+            }
+            next;
+        }
+
+        #   Test for ISBN-13 argument and process if so.
+
+        my $n = validate_ISBN_13($s);
+        if ($n ne '') {
+            #   This is a valid ISBN-13
+            if ($hyphenate) {
+                #   Extract delimiter from given ISBN-13, if any
+                my $delim = '-';
+                $delim = $1 if ($s =~ m/([^\d])/);
+                $s = hyphenate($n, $delim);
+            }
+            my ($isbn10, $esbn10);
+            if (substr($n, 2, 1) eq '9') {
+                $isbn10 = 'Unmappable';
+                $esbn10 = 'Unmappable';
+                $status += 1;
+            } else {
+                $isbn10 = substr($n, 3, 9);
+                my $ckd = ISBN_10_check($isbn10);
+                $isbn10 .= $ckd;
+                $esbn10 = $s;
+                $esbn10 =~ s/^9\D?7\D?[89]\D?//;
+                $esbn10 =~ s/\d(\D*)$/$ckd$1/;
+            }
+            my $amazonURL = "";
+            if (($Amazon ne '') && ($isbn10 ne 'Unmappable')) {
+                $amazonURL = "http://$Amazon/dp/$isbn10/" . credit();
+            }
+
+            if ($csv) {
+                #   CSV output fields
+                #
+                #       1.  Status
+                #       2.  ISBN-13, no delimiters
+                #       3.  ISBN-13, with delimiters
+                #       4.  ISBN-10, no delimiters  ("Unmappable" if 979-)
+                #       5.  ISBN-10, with delimiters    ("Unmappable" if 979-)
+                #       6.  Registration group
+                #       7.  Amazon associates URL
+                #       8.  ISBN registration group database date
+                printf("$status,$n,\"$s\",$isbn10,\"$esbn10\",\"$registrationGroup\",\"$amazonURL\",\"$ISBN_database_date\"\n");
+            } else {
+                printf("ISBN-13: %20s  %13s  ISBN-10:  %13s  %20s\n", $s, $n, $isbn10, $esbn10);
+                if (($Amazon ne '') && ($isbn10 ne 'Unmappable')) {
+                    print("$amazonURL\n");
+                }
+                if ($showRegGroup && ($registrationGroup ne '')) {
+                    print("ISBN Registration Group: $registrationGroup\n");
+                }
+            }
+
+        #   Not ISBN-13.  Test for valid ISBN-10 and process if so.
+
+        } elsif (($n = validate_ISBN_10($s)) ne '') {
+            #   This is a valid ISBN-10
+            my $isbn13 = "978". substr($n, 0, 9);
+            my $ckd = ISBN_13_check($isbn13);
+            $isbn13 .= $ckd;
+            my $esbn13;
+            if ($hyphenate) {
+                #   Extract delimiter from given ISBN-10, if any
+                my $delim = '-';
+                $delim = $1 if ($s =~ m/([^\dxX])/);
+                $esbn13 = hyphenate($isbn13, $delim);
+                #   We now have a hyphenated ISBN-13 in $esbn13.  Synthesise a
+                #   hyphenated ISBN-10 from it into $s.
+                if (length($esbn13) > 13) {
+                    #   Hyphenation succeeded: we're on
+                    $s = $esbn13;
+                    $s =~ s/....//;         # Peel off Bookland prefix
+                    $s =~ s/.$//;           # Peel off ISBN-13 check digit
+                    $n =~ m/(.)$/;          # Extract ISBN-10 check digit
+                    $s .= $1;               # Append check digit to hyphenated ISBN-10
+                }
+            } else {
+                my $delim = '';
+                $delim = $1 if ($s =~ m/([^\dxX])/);
+                $esbn13 = "978$delim$s";
+                $esbn13 =~ s/[\dxX]([^\dxX]*)$/$ckd$1/;
+            }
+
+            my $amazonURL = "";
+            if ($Amazon ne '') {
+                $amazonURL = "http://$Amazon/dp/$n/" . credit();
+            }
+
+            if ($csv) {
+                printf("$status,$isbn13,\"$esbn13\",$n,\"$s\",\"$registrationGroup\",\"$amazonURL\",\"$ISBN_database_date\"\n");
+            } else {
+                printf("ISBN-10: %20s  %13s  ISBN-13:  %13s  %20s\n", $s, $n, $isbn13, $esbn13);
+                if ($Amazon ne '') {
+                    print("$amazonURL\n");
+                }
+                if ($showRegGroup && ($registrationGroup ne '')) {
+                    print("ISBN Registration Group: $registrationGroup\n");
+                }
+            }
+
+        #   It's neither ISBN-13 nor ISBN-10.  Bounce it.
+
+        } else {
+            if ($csv) {
+                my $cstat = 401;
+                if ($auxstat10 != 401) {
+                    $cstat = $auxstat10;
+                } elsif ($auxstat13 != 401) {
+                    $cstat = $auxstat13;
+                }
+                #   Return error status and void result
+                print("$cstat,,\"\",,\"\",\"\",\"\",\"$ISBN_database_date\"\n");
+            } else {
+                print("Invalid ISBN: $s\n");
+            }
+        }
+    }
+
+    #   Construct credit string for Amazon links
+
+    sub credit {
+        my $c = $credit;
+
+        if ($c ne '') {
+            $c = "?tag=$credit";
+        }
+        return $c;
+    }
+
+    #   Compute ISBN-13 check digit from a canonical ISBN-13.  Only
+    #   the first 12 characters of the ISBN are examined.
+
+    sub ISBN_13_check {
+        my ($s) = @_;
+        my (@digits, $sum, $d, $i, $f);
+
+        @digits = unpack('C12', $s);
+        $sum = 0;
+        $f = 1;
+        for ($i = 0; $i < 12; $i++) {
+            $d = $digits[$i] - ord('0');
+            $sum += $f * $d;
+            $f = ($f + 2) & 3;
+        }
+        $sum %= 10;
+        return (10 - $sum) % 10;
+    }
+
+    #   Test whether the argument is a valid ISBN-13.  Punctuation
+    #   is ignored.  The function returns the canonical 13 digit
+    #   ISBN-13 if valid and the null string otherwise.
+
+    sub validate_ISBN_13 {
+        my ($s) = @_;
+        my (@digits, $sum, $d, $i, $f);
+
+        $s =~ tr/0-9//cd;       # Delete any non-digits
+        if (length($s) != 13) {
+            $auxstat13 = 401;   # Incorrect length
+            return '';          # All valid ISBN-13s are thirteen characters
+        }
+        @digits = unpack('C13', $s);
+        $sum = 0;
+        $f = 1;
+        for ($i = 0; $i < 13; $i++) {
+            $d = $digits[$i] - ord('0');
+            $sum += $f * $d;
+            $f = ($f + 2) & 3;
+        }
+        $sum %= 10;
+        if ($sum != 0) {
+            $auxstat13 = 404;   # Checksum incorrect
+            return '';          # ISBN-13 checksum is incorrect
+        }
+        if ($s !~ m/^97[89]/) {
+            $auxstat13 = 405;   # Prefix is neither 978 or 979
+            return '';          # This is a valid EAN-13, but not in Bookland
+        }
+        $auxstat13 = 0;         # ISBN-13 is valid
+        return $s;
+    }
+
+    #   Compute ISBN-10 check digit from a canonical ISBN-10.  Only
+    #   the first 9 characters of if the ISBN are examined.
+
+    sub ISBN_10_check {
+        my ($s) = @_;
+        my (@digits, $sum, $d, $i);
+
+        @digits = unpack('C9', $s);
+        $sum = 0;
+        for ($i = 0; $i < 9; $i++) {
+            $d = $digits[$i] - ord('0');
+            $sum += (10 - $i) * $d;
+        }
+        $sum %= 11;
+        $sum = 11 - $sum;
+        return ($sum == 10) ? 'X' :
+            (($sum == 11) ? 0 : $sum);
+    }
+
+    #   Test whether the argument is a valid ISBN-10.  Punctuation
+    #   is ignored and the "X" checksum may be either upper or
+    #   lower case.  The function returns the canonical 10 character
+    #   ISBN-10 if valid and the null string otherwise.
+
+    sub validate_ISBN_10 {
+        my ($s) = @_;
+        my (@digits, $sum, $d, $i);
+
+        $s = uc($s);            # Actually, just for "X"
+        $s =~ tr/0-9A-Z//cd;    # Delete any punctuation
+        if (length($s) != 10) {
+            $auxstat10 = 401;   # Incorrect length
+            return '';          # All valid ISBNs are ten characters
+        }
+        if ($s =~ m/A-WYZ/) {
+            $auxstat10 = 402;   # Illegal character
+            return '';          # "X" is the only letter permitted in an ISBN
+        }
+        if (substr($s, 0, 9) =~ m/X/) {
+            $auxstat10 = 403;   # ISBN-10 checksum not last character
+            return '';          # "X" may only appear as the last, checksum, character
+        }
+        @digits = unpack('C10', $s);
+        $sum = 0;
+        for ($i = 0; $i < 10; $i++) {
+            if ($digits[$i] == ord('X')) {
+                $d = 10;
+            } else {
+                $d = $digits[$i] - ord('0');
+            }
+            $sum += (10 - $i) * $d;
+        }
+        $sum %= 11;
+        if ($sum != 0) {
+            $auxstat10 = 404;   # Checksum incorrect
+            return '';          # ISBN checksum is incorrect
+        }
+        $auxstat10 = 0;         # ISBN-10 is correct
+        return $s;
+    }
+
+    #   Hyphenate an ISBN-13 in canonical form (no delimiters)
+
+    #   Division of ISBNs into registration group, registrant,
+    #   publication, and checksum is deliciously baroque
+    #   (although checksum is always a single character).
+    #   The ISBN bureaucracy publishes a database:
+    #       https://www.isbn-international.org/range_file_generation
+    #   which lists all the registration groups and ranges
+    #   (determined by each) which determine how many
+    #   digits within that range identify the registrant
+    #   (publisher).  A range with zero registrant digits
+    #   is invalid.  The ISBN is divided into its components
+    #   and separated by the delimiter given as the second
+    #   argument.
+
+    #   We assume the first argument is an already-validated
+    #   ISBN-13 with no delimiters.  The second argument will be
+    #   used as the delimiter to be inserted within elements in
+    #   the ISBN-13 returned.  If the ISBN cannot be hyphenated
+    #   (its prefix is not in the range group database), a
+    #   warning message is issued and it is returned unmodified.
+
+    sub hyphenate {
+        my ($isbn, $delim) = @_;
+
+        die("Argument ($isbn) is not an ISBN-13")
+            if ($isbn !~ m/^\d{13}$/);
+
+        #   Check digit is always the last
+
+        $isbn =~ m/(\d\d\d)(\d+)(\d)$/;
+        my ($ean, $regpub, $check) = ($1, $2, $3);
+        my ($registrant, $publication);
+
+        #   Now we walk through the ISBN_range table searching
+        #   for the actual prefix in the ISBN argument.  We
+        #   match on the prefix plus registration group element,
+        #   then test the remainder of the ISBN (less check digit)
+        #   for within range.
+
+        for (my $i = 0; $i < scalar(@ISBN_range); $i++) {
+            my $r = $ISBN_range[$i];
+            my $rp = @$r[0];
+            $rp =~ s/\D//g;
+
+            my $earp = "$ean$regpub";
+            if ($earp =~ m/^$rp(\d+)$/) {
+                my $balance = $1;
+                my $brange = $balance . "0000000";
+                $brange =~ m/^(\d{7})/;
+                $brange = $1;
+                my $irange = @$r[2];
+                $irange =~ m/^(\d+)\-(\d+)$/;
+                my ($irlow, $irhigh) = ($1, $2);
+                if (($brange >= $irlow) && ($brange <= $irhigh)) {
+                    $registrationGroup = @$r[1];
+                    my $reglength = @$r[3];     # Length of registrant
+                    if ($reglength > 0) {       # Registrant length == 0 means invalid
+                        #   Now, to extract the registrant and publication,
+                        #   we take the complete ISBN, strip off the
+                        #   prefix we found, and then divide the
+                        #   remainder into registrant and publication,
+                        #   discarding the check digit.
+                        $isbn =~ m/^$rp(\d{$reglength})(\d+)\d$/;
+                        ($registrant, $publication) = ($1, $2);
+
+                        #   OK, we've got it.  Return the hyphenated
+                        #   components of the ISBN.
+
+                        my $prefix = @$r[0];
+                        $prefix =~ s/\D/$delim/g;   # Use requested delimiter after prefix
+                        return "$prefix$delim$registrant$delim$publication$delim$check";
+                    }
+                }
+            }
+        }
+
+        if ($csv) {
+            $status = 300;
+            $registrationGroup = 'Invalid';
+        } else {
+            print(STDERR "Unable to hyphenate ISBN $isbn.\n");
+            $registrationGroup = '';
+        }
+        return $isbn;
+    }
+
+    #   Print help message if called with no arguments or
+    #   the -u or --help options.
+
+    sub help {
+        print("usage: isbniser arg...\n");
+        print("  Arguments can be an ISBN-10 or ISBN-13 in any of the\n");
+        print("  following forms:\n");
+        print("    0-309-09657-X        ISBN-10 with delimiters\n");
+        print("    0.309.09657.X        ISBN-10 with alternative delimiters\n");
+        print("    1844135438           ISBN-10 without delimiters\n");
+        print("    978-0-471-64877-2    ISBN-13 with delimiters\n");
+        print("    978.0.471.64877.2    ISBN-13 with alternative delimiters\n");
+        print("    9780385611015        ISBN-13 without delimiters\n");
+        print("  Options:\n");
+        print("    -a<URL>          Specify URL of site for Amazon links\n");
+        print("    -c<account>      Specify Amazon associates account\n");
+        print("    -d               Database (CSV) format output\n");
+        print("    -g               Show ISBN registration group\n");
+        print("    -n               Do not validate subsequent ISBNs/ASINs\n");
+        print("    -p               Preserve original delimiters (do not re-hyphenate)\n");
+        print("    -r               Use built-in alternative Amazon associates account\n");
+        print("    -u --help        Print this message\n");
+        print("    -v               Validate subsequent ISBNs\n");
+        print("  Sample output:\n");
+        print("    ISBN-13: 978-0-471-64877-2  9780471648772    ISBN-10: 0471648779  0-471-64877-9\n");
+        print("    http://www.amazon.com/dp/0471648779/?tag=assoc-acct\n");
+        print("  Configuration (edit program to change):\n");
+        print("    Amazon site: \"$Amazon\"\n");
+        print("    Default associates account: \"$credit\"\n");
+        print("    Alternative associates account: \"$creditR\"\n");
+        print("  ISBN range database date: $ISBN_database_date\n");
+        print("Version $Version\n");
+        exit(0);
+    }
+
+    #   Define the ISBN ranges
+
+    #   We do this in a subroutine purely to put it at the bottom
+    #   of the source file so it doesn't distract from the code,
+    #   which is what most people will be interested in.
+
+    sub define_ISBN_ranges {
+
+        #   ISBN range definitions
+
+        #   Compiled from:
+        #       https://www.isbn-international.org/range_file_generation
+        #   by the parse_range_xml.pl program included in the source
+        #   distribution.
+
+        # Included from ./isbn_range.pl
+        @ISBN_range = (
+            [ "978-0", "English language", "0000000-1999999", 2 ],
+            [ "978-0", "English language", "2000000-2279999", 3 ],
+            [ "978-0", "English language", "2280000-2289999", 4 ],
+            [ "978-0", "English language", "2290000-3689999", 3 ],
+            [ "978-0", "English language", "3690000-3699999", 4 ],
+            [ "978-0", "English language", "3700000-6389999", 3 ],
+            [ "978-0", "English language", "6390000-6397999", 4 ],
+            [ "978-0", "English language", "6398000-6399999", 7 ],
+            [ "978-0", "English language", "6400000-6449999", 3 ],
+            [ "978-0", "English language", "6450000-6459999", 7 ],
+            [ "978-0", "English language", "6460000-6479999", 3 ],
+            [ "978-0", "English language", "6480000-6489999", 7 ],
+            [ "978-0", "English language", "6490000-6549999", 3 ],
+            [ "978-0", "English language", "6550000-6559999", 4 ],
+            [ "978-0", "English language", "6560000-6999999", 3 ],
+            [ "978-0", "English language", "7000000-8499999", 4 ],
+            [ "978-0", "English language", "8500000-8999999", 5 ],
+            [ "978-0", "English language", "9000000-9499999", 6 ],
+            [ "978-0", "English language", "9500000-9999999", 7 ],
+            [ "978-1", "English language", "0000000-0099999", 3 ],
+            [ "978-1", "English language", "0100000-0299999", 2 ],
+            [ "978-1", "English language", "0300000-0349999", 3 ],
+            [ "978-1", "English language", "0350000-0399999", 4 ],
+            [ "978-1", "English language", "0400000-0699999", 2 ],
+            [ "978-1", "English language", "0700000-0999999", 4 ],
+            [ "978-1", "English language", "1000000-3979999", 3 ],
+            [ "978-1", "English language", "3980000-5499999", 4 ],
+            [ "978-1", "English language", "5500000-6499999", 5 ],
+            [ "978-1", "English language", "6500000-6799999", 4 ],
+            [ "978-1", "English language", "6800000-6859999", 5 ],
+            [ "978-1", "English language", "6860000-7139999", 4 ],
+            [ "978-1", "English language", "7140000-7169999", 3 ],
+            [ "978-1", "English language", "7170000-7319999", 4 ],
+            [ "978-1", "English language", "7320000-7399999", 7 ],
+            [ "978-1", "English language", "7400000-7749999", 5 ],
+            [ "978-1", "English language", "7750000-7753999", 7 ],
+            [ "978-1", "English language", "7754000-7763999", 5 ],
+            [ "978-1", "English language", "7764000-7764999", 7 ],
+            [ "978-1", "English language", "7765000-7769999", 5 ],
+            [ "978-1", "English language", "7770000-7782999", 7 ],
+            [ "978-1", "English language", "7783000-7899999", 5 ],
+            [ "978-1", "English language", "7900000-7999999", 4 ],
+            [ "978-1", "English language", "8000000-8004999", 5 ],
+            [ "978-1", "English language", "8005000-8049999", 5 ],
+            [ "978-1", "English language", "8050000-8379999", 5 ],
+            [ "978-1", "English language", "8380000-8384999", 7 ],
+            [ "978-1", "English language", "8385000-8671999", 5 ],
+            [ "978-1", "English language", "8672000-8675999", 4 ],
+            [ "978-1", "English language", "8676000-8697999", 5 ],
+            [ "978-1", "English language", "8698000-9159999", 6 ],
+            [ "978-1", "English language", "9160000-9165059", 7 ],
+            [ "978-1", "English language", "9165060-9168699", 6 ],
+            [ "978-1", "English language", "9168700-9169079", 7 ],
+            [ "978-1", "English language", "9169080-9195999", 6 ],
+            [ "978-1", "English language", "9196000-9196549", 7 ],
+            [ "978-1", "English language", "9196550-9729999", 6 ],
+            [ "978-1", "English language", "9730000-9877999", 4 ],
+            [ "978-1", "English language", "9878000-9911499", 6 ],
+            [ "978-1", "English language", "9911500-9911999", 7 ],
+            [ "978-1", "English language", "9912000-9989899", 6 ],
+            [ "978-1", "English language", "9989900-9999999", 7 ],
+            [ "978-2", "French language", "0000000-1999999", 2 ],
+            [ "978-2", "French language", "2000000-3499999", 3 ],
+            [ "978-2", "French language", "3500000-3999999", 5 ],
+            [ "978-2", "French language", "4000000-4899999", 3 ],
+            [ "978-2", "French language", "4900000-4949999", 6 ],
+            [ "978-2", "French language", "4950000-4959999", 3 ],
+            [ "978-2", "French language", "4960000-4966999", 4 ],
+            [ "978-2", "French language", "4967000-4969999", 5 ],
+            [ "978-2", "French language", "4970000-6999999", 3 ],
+            [ "978-2", "French language", "7000000-8399999", 4 ],
+            [ "978-2", "French language", "8400000-8999999", 5 ],
+            [ "978-2", "French language", "9000000-9197999", 6 ],
+            [ "978-2", "French language", "9198000-9198099", 5 ],
+            [ "978-2", "French language", "9198100-9199429", 6 ],
+            [ "978-2", "French language", "9199430-9199689", 7 ],
+            [ "978-2", "French language", "9199690-9499999", 6 ],
+            [ "978-2", "French language", "9500000-9999999", 7 ],
+            [ "978-3", "German language", "0000000-0299999", 2 ],
+            [ "978-3", "German language", "0300000-0339999", 3 ],
+            [ "978-3", "German language", "0340000-0369999", 4 ],
+            [ "978-3", "German language", "0370000-0399999", 5 ],
+            [ "978-3", "German language", "0400000-1999999", 2 ],
+            [ "978-3", "German language", "2000000-6999999", 3 ],
+            [ "978-3", "German language", "7000000-8499999", 4 ],
+            [ "978-3", "German language", "8500000-8999999", 5 ],
+            [ "978-3", "German language", "9000000-9499999", 6 ],
+            [ "978-3", "German language", "9500000-9539999", 7 ],
+            [ "978-3", "German language", "9540000-9699999", 5 ],
+            [ "978-3", "German language", "9700000-9849999", 7 ],
+            [ "978-3", "German language", "9850000-9999999", 5 ],
+            [ "978-4", "Japan", "0000000-1999999", 2 ],
+            [ "978-4", "Japan", "2000000-6999999", 3 ],
+            [ "978-4", "Japan", "7000000-8499999", 4 ],
+            [ "978-4", "Japan", "8500000-8999999", 5 ],
+            [ "978-4", "Japan", "9000000-9499999", 6 ],
+            [ "978-4", "Japan", "9500000-9999999", 7 ],
+            [ "978-5", "former U.S.S.R", "0000000-0049999", 5 ],
+            [ "978-5", "former U.S.S.R", "0050000-0099999", 4 ],
+            [ "978-5", "former U.S.S.R", "0100000-1999999", 2 ],
+            [ "978-5", "former U.S.S.R", "2000000-4209999", 3 ],
+            [ "978-5", "former U.S.S.R", "4210000-4299999", 4 ],
+            [ "978-5", "former U.S.S.R", "4300000-4309999", 3 ],
+            [ "978-5", "former U.S.S.R", "4310000-4399999", 4 ],
+            [ "978-5", "former U.S.S.R", "4400000-4409999", 3 ],
+            [ "978-5", "former U.S.S.R", "4410000-4499999", 4 ],
+            [ "978-5", "former U.S.S.R", "4500000-6039999", 3 ],
+            [ "978-5", "former U.S.S.R", "6040000-6049999", 7 ],
+            [ "978-5", "former U.S.S.R", "6050000-6999999", 3 ],
+            [ "978-5", "former U.S.S.R", "7000000-8499999", 4 ],
+            [ "978-5", "former U.S.S.R", "8500000-8999999", 5 ],
+            [ "978-5", "former U.S.S.R", "9000000-9099999", 6 ],
+            [ "978-5", "former U.S.S.R", "9100000-9199999", 5 ],
+            [ "978-5", "former U.S.S.R", "9200000-9299999", 4 ],
+            [ "978-5", "former U.S.S.R", "9300000-9499999", 5 ],
+            [ "978-5", "former U.S.S.R", "9500000-9500999", 7 ],
+            [ "978-5", "former U.S.S.R", "9501000-9799999", 4 ],
+            [ "978-5", "former U.S.S.R", "9800000-9899999", 5 ],
+            [ "978-5", "former U.S.S.R", "9900000-9909999", 7 ],
+            [ "978-5", "former U.S.S.R", "9910000-9999999", 4 ],
+            [ "978-600", "Iran", "0000000-0999999", 2 ],
+            [ "978-600", "Iran", "1000000-4999999", 3 ],
+            [ "978-600", "Iran", "5000000-8999999", 4 ],
+            [ "978-600", "Iran", "9000000-9867999", 5 ],
+            [ "978-600", "Iran", "9868000-9929999", 4 ],
+            [ "978-600", "Iran", "9930000-9959999", 3 ],
+            [ "978-600", "Iran", "9960000-9999999", 5 ],
+            [ "978-601", "Kazakhstan", "0000000-1999999", 2 ],
+            [ "978-601", "Kazakhstan", "2000000-6999999", 3 ],
+            [ "978-601", "Kazakhstan", "7000000-7999999", 4 ],
+            [ "978-601", "Kazakhstan", "8000000-8499999", 5 ],
+            [ "978-601", "Kazakhstan", "8500000-9999999", 2 ],
+            [ "978-602", "Indonesia", "0000000-0699999", 2 ],
+            [ "978-602", "Indonesia", "0700000-1399999", 4 ],
+            [ "978-602", "Indonesia", "1400000-1499999", 5 ],
+            [ "978-602", "Indonesia", "1500000-1699999", 4 ],
+            [ "978-602", "Indonesia", "1700000-1999999", 5 ],
+            [ "978-602", "Indonesia", "2000000-4999999", 3 ],
+            [ "978-602", "Indonesia", "5000000-5399999", 5 ],
+            [ "978-602", "Indonesia", "5400000-5999999", 4 ],
+            [ "978-602", "Indonesia", "6000000-6199999", 5 ],
+            [ "978-602", "Indonesia", "6200000-6999999", 4 ],
+            [ "978-602", "Indonesia", "7000000-7499999", 5 ],
+            [ "978-602", "Indonesia", "7500000-9499999", 4 ],
+            [ "978-602", "Indonesia", "9500000-9999999", 5 ],
+            [ "978-603", "Saudi Arabia", "0000000-0499999", 2 ],
+            [ "978-603", "Saudi Arabia", "0500000-4999999", 2 ],
+            [ "978-603", "Saudi Arabia", "5000000-7999999", 3 ],
+            [ "978-603", "Saudi Arabia", "8000000-8999999", 4 ],
+            [ "978-603", "Saudi Arabia", "9000000-9999999", 5 ],
+            [ "978-604", "Vietnam", "0000000-4999999", 1 ],
+            [ "978-604", "Vietnam", "5000000-8999999", 2 ],
+            [ "978-604", "Vietnam", "9000000-9799999", 3 ],
+            [ "978-604", "Vietnam", "9800000-9999999", 4 ],
+            [ "978-605", "Turkey", "0000000-0299999", 2 ],
+            [ "978-605", "Turkey", "0300000-0399999", 3 ],
+            [ "978-605", "Turkey", "0400000-0599999", 2 ],
+            [ "978-605", "Turkey", "0600000-0699999", 5 ],
+            [ "978-605", "Turkey", "0700000-0999999", 2 ],
+            [ "978-605", "Turkey", "1000000-1999999", 3 ],
+            [ "978-605", "Turkey", "2000000-2399999", 4 ],
+            [ "978-605", "Turkey", "2400000-3999999", 3 ],
+            [ "978-605", "Turkey", "4000000-5999999", 4 ],
+            [ "978-605", "Turkey", "6000000-7499999", 5 ],
+            [ "978-605", "Turkey", "7500000-7999999", 4 ],
+            [ "978-605", "Turkey", "8000000-8999999", 5 ],
+            [ "978-605", "Turkey", "9000000-9999999", 4 ],
+            [ "978-606", "Romania", "0000000-0999999", 3 ],
+            [ "978-606", "Romania", "1000000-4999999", 2 ],
+            [ "978-606", "Romania", "5000000-7999999", 3 ],
+            [ "978-606", "Romania", "8000000-9099999", 4 ],
+            [ "978-606", "Romania", "9100000-9199999", 3 ],
+            [ "978-606", "Romania", "9200000-9599999", 5 ],
+            [ "978-606", "Romania", "9600000-9749999", 4 ],
+            [ "978-606", "Romania", "9750000-9999999", 3 ],
+            [ "978-607", "Mexico", "0000000-3999999", 2 ],
+            [ "978-607", "Mexico", "4000000-7499999", 3 ],
+            [ "978-607", "Mexico", "7500000-9499999", 4 ],
+            [ "978-607", "Mexico", "9500000-9999999", 5 ],
+            [ "978-608", "North Macedonia", "0000000-0999999", 1 ],
+            [ "978-608", "North Macedonia", "1000000-1999999", 2 ],
+            [ "978-608", "North Macedonia", "2000000-4499999", 3 ],
+            [ "978-608", "North Macedonia", "4500000-6499999", 4 ],
+            [ "978-608", "North Macedonia", "6500000-6999999", 5 ],
+            [ "978-608", "North Macedonia", "7000000-9999999", 1 ],
+            [ "978-609", "Lithuania", "0000000-3999999", 2 ],
+            [ "978-609", "Lithuania", "4000000-7999999", 3 ],
+            [ "978-609", "Lithuania", "8000000-9499999", 4 ],
+            [ "978-609", "Lithuania", "9500000-9999999", 5 ],
+            [ "978-611", "Thailand", "0000000-9999999", 0 ],
+            [ "978-612", "Peru", "0000000-2999999", 2 ],
+            [ "978-612", "Peru", "3000000-3999999", 3 ],
+            [ "978-612", "Peru", "4000000-4499999", 4 ],
+            [ "978-612", "Peru", "4500000-4999999", 5 ],
+            [ "978-612", "Peru", "5000000-5149999", 4 ],
+            [ "978-612", "Peru", "5150000-9999999", 0 ],
+            [ "978-613", "Mauritius", "0000000-9999999", 1 ],
+            [ "978-614", "Lebanon", "0000000-3999999", 2 ],
+            [ "978-614", "Lebanon", "4000000-7999999", 3 ],
+            [ "978-614", "Lebanon", "8000000-9499999", 4 ],
+            [ "978-614", "Lebanon", "9500000-9999999", 5 ],
+            [ "978-615", "Hungary", "0000000-0999999", 2 ],
+            [ "978-615", "Hungary", "1000000-4999999", 3 ],
+            [ "978-615", "Hungary", "5000000-7999999", 4 ],
+            [ "978-615", "Hungary", "8000000-8999999", 5 ],
+            [ "978-615", "Hungary", "9000000-9999999", 0 ],
+            [ "978-616", "Thailand", "0000000-1999999", 2 ],
+            [ "978-616", "Thailand", "2000000-6999999", 3 ],
+            [ "978-616", "Thailand", "7000000-8999999", 4 ],
+            [ "978-616", "Thailand", "9000000-9999999", 5 ],
+            [ "978-617", "Ukraine", "0000000-4999999", 2 ],
+            [ "978-617", "Ukraine", "5000000-6999999", 3 ],
+            [ "978-617", "Ukraine", "7000000-8999999", 4 ],
+            [ "978-617", "Ukraine", "9000000-9999999", 5 ],
+            [ "978-618", "Greece", "0000000-1999999", 2 ],
+            [ "978-618", "Greece", "2000000-4999999", 3 ],
+            [ "978-618", "Greece", "5000000-7999999", 4 ],
+            [ "978-618", "Greece", "8000000-9999999", 5 ],
+            [ "978-619", "Bulgaria", "0000000-1499999", 2 ],
+            [ "978-619", "Bulgaria", "1500000-6999999", 3 ],
+            [ "978-619", "Bulgaria", "7000000-8999999", 4 ],
+            [ "978-619", "Bulgaria", "9000000-9999999", 5 ],
+            [ "978-620", "Mauritius", "0000000-9999999", 1 ],
+            [ "978-621", "Philippines", "0000000-2999999", 2 ],
+            [ "978-621", "Philippines", "3000000-3999999", 0 ],
+            [ "978-621", "Philippines", "4000000-5999999", 3 ],
+            [ "978-621", "Philippines", "6000000-7999999", 0 ],
+            [ "978-621", "Philippines", "8000000-8999999", 4 ],
+            [ "978-621", "Philippines", "9000000-9499999", 0 ],
+            [ "978-621", "Philippines", "9500000-9999999", 5 ],
+            [ "978-622", "Iran", "0000000-1099999", 2 ],
+            [ "978-622", "Iran", "1100000-1999999", 0 ],
+            [ "978-622", "Iran", "2000000-3249999", 3 ],
+            [ "978-622", "Iran", "3250000-5649999", 0 ],
+            [ "978-622", "Iran", "5650000-7999999", 4 ],
+            [ "978-622", "Iran", "8000000-9399999", 0 ],
+            [ "978-622", "Iran", "9400000-9999999", 5 ],
+            [ "978-623", "Indonesia", "0000000-0999999", 2 ],
+            [ "978-623", "Indonesia", "1000000-1999999", 0 ],
+            [ "978-623", "Indonesia", "2000000-3999999", 3 ],
+            [ "978-623", "Indonesia", "4000000-5499999", 0 ],
+            [ "978-623", "Indonesia", "5500000-7999999", 4 ],
+            [ "978-623", "Indonesia", "8000000-8999999", 0 ],
+            [ "978-623", "Indonesia", "9000000-9999999", 5 ],
+            [ "978-624", "Sri Lanka", "0000000-0499999", 2 ],
+            [ "978-624", "Sri Lanka", "0500000-1999999", 0 ],
+            [ "978-624", "Sri Lanka", "2000000-2499999", 3 ],
+            [ "978-624", "Sri Lanka", "2500000-4999999", 0 ],
+            [ "978-624", "Sri Lanka", "5000000-6249999", 4 ],
+            [ "978-624", "Sri Lanka", "6250000-9499999", 0 ],
+            [ "978-624", "Sri Lanka", "9500000-9999999", 5 ],
+            [ "978-625", "Turkey", "0000000-0099999", 2 ],
+            [ "978-625", "Turkey", "0100000-3999999", 0 ],
+            [ "978-625", "Turkey", "4000000-4429999", 3 ],
+            [ "978-625", "Turkey", "4430000-4449999", 5 ],
+            [ "978-625", "Turkey", "4450000-4499999", 3 ],
+            [ "978-625", "Turkey", "4500000-6999999", 0 ],
+            [ "978-625", "Turkey", "7000000-7793999", 4 ],
+            [ "978-625", "Turkey", "7794000-7794999", 5 ],
+            [ "978-625", "Turkey", "7795000-8499999", 4 ],
+            [ "978-625", "Turkey", "8500000-9999999", 0 ],
+            [ "978-626", "Taiwan", "0000000-0499999", 2 ],
+            [ "978-626", "Taiwan", "0500000-2999999", 0 ],
+            [ "978-626", "Taiwan", "3000000-4999999", 3 ],
+            [ "978-626", "Taiwan", "5000000-6999999", 0 ],
+            [ "978-626", "Taiwan", "7000000-7999999", 4 ],
+            [ "978-626", "Taiwan", "8000000-9499999", 0 ],
+            [ "978-626", "Taiwan", "9500000-9999999", 5 ],
+            [ "978-627", "Pakistan", "0000000-2999999", 0 ],
+            [ "978-627", "Pakistan", "3000000-3199999", 2 ],
+            [ "978-627", "Pakistan", "3200000-4999999", 0 ],
+            [ "978-627", "Pakistan", "5000000-5249999", 3 ],
+            [ "978-627", "Pakistan", "5250000-7499999", 0 ],
+            [ "978-627", "Pakistan", "7500000-7999999", 4 ],
+            [ "978-627", "Pakistan", "8000000-9999999", 0 ],
+            [ "978-628", "Colombia", "0000000-0999999", 2 ],
+            [ "978-628", "Colombia", "1000000-4999999", 0 ],
+            [ "978-628", "Colombia", "5000000-5499999", 3 ],
+            [ "978-628", "Colombia", "5500000-7499999", 0 ],
+            [ "978-628", "Colombia", "7500000-8499999", 4 ],
+            [ "978-628", "Colombia", "8500000-9999999", 0 ],
+            [ "978-65", "Brazil", "0000000-0199999", 2 ],
+            [ "978-65", "Brazil", "0200000-2499999", 0 ],
+            [ "978-65", "Brazil", "2500000-2999999", 3 ],
+            [ "978-65", "Brazil", "3000000-3029999", 3 ],
+            [ "978-65", "Brazil", "3030000-4999999", 0 ],
+            [ "978-65", "Brazil", "5000000-5129999", 4 ],
+            [ "978-65", "Brazil", "5130000-5349999", 0 ],
+            [ "978-65", "Brazil", "5350000-5999999", 4 ],
+            [ "978-65", "Brazil", "6000000-7999999", 0 ],
+            [ "978-65", "Brazil", "8000000-8182499", 5 ],
+            [ "978-65", "Brazil", "8182500-8449999", 0 ],
+            [ "978-65", "Brazil", "8450000-8999999", 5 ],
+            [ "978-65", "Brazil", "9000000-9024499", 6 ],
+            [ "978-65", "Brazil", "9024500-9899999", 0 ],
+            [ "978-65", "Brazil", "9900000-9999999", 6 ],
+            [ "978-7", "China, People's Republic", "0000000-0999999", 2 ],
+            [ "978-7", "China, People's Republic", "1000000-4999999", 3 ],
+            [ "978-7", "China, People's Republic", "5000000-7999999", 4 ],
+            [ "978-7", "China, People's Republic", "8000000-8999999", 5 ],
+            [ "978-7", "China, People's Republic", "9000000-9999999", 6 ],
+            [ "978-80", "former Czechoslovakia", "0000000-1999999", 2 ],
+            [ "978-80", "former Czechoslovakia", "2000000-6999999", 3 ],
+            [ "978-80", "former Czechoslovakia", "7000000-8499999", 4 ],
+            [ "978-80", "former Czechoslovakia", "8500000-8999999", 5 ],
+            [ "978-80", "former Czechoslovakia", "9000000-9989999", 6 ],
+            [ "978-80", "former Czechoslovakia", "9990000-9999999", 5 ],
+            [ "978-81", "India", "0000000-1999999", 2 ],
+            [ "978-81", "India", "2000000-6999999", 3 ],
+            [ "978-81", "India", "7000000-8499999", 4 ],
+            [ "978-81", "India", "8500000-8999999", 5 ],
+            [ "978-81", "India", "9000000-9999999", 6 ],
+            [ "978-82", "Norway", "0000000-1999999", 2 ],
+            [ "978-82", "Norway", "2000000-6899999", 3 ],
+            [ "978-82", "Norway", "6900000-6999999", 6 ],
+            [ "978-82", "Norway", "7000000-8999999", 4 ],
+            [ "978-82", "Norway", "9000000-9899999", 5 ],
+            [ "978-82", "Norway", "9900000-9999999", 6 ],
+            [ "978-83", "Poland", "0000000-1999999", 2 ],
+            [ "978-83", "Poland", "2000000-5999999", 3 ],
+            [ "978-83", "Poland", "6000000-6999999", 5 ],
+            [ "978-83", "Poland", "7000000-8499999", 4 ],
+            [ "978-83", "Poland", "8500000-8999999", 5 ],
+            [ "978-83", "Poland", "9000000-9999999", 6 ],
+            [ "978-84", "Spain", "0000000-1099999", 2 ],
+            [ "978-84", "Spain", "1100000-1199999", 4 ],
+            [ "978-84", "Spain", "1200000-1299999", 6 ],
+            [ "978-84", "Spain", "1300000-1399999", 4 ],
+            [ "978-84", "Spain", "1400000-1499999", 3 ],
+            [ "978-84", "Spain", "1500000-1999999", 5 ],
+            [ "978-84", "Spain", "2000000-6999999", 3 ],
+            [ "978-84", "Spain", "7000000-8499999", 4 ],
+            [ "978-84", "Spain", "8500000-8999999", 5 ],
+            [ "978-84", "Spain", "9000000-9199999", 4 ],
+            [ "978-84", "Spain", "9200000-9239999", 6 ],
+            [ "978-84", "Spain", "9240000-9299999", 5 ],
+            [ "978-84", "Spain", "9300000-9499999", 6 ],
+            [ "978-84", "Spain", "9500000-9699999", 5 ],
+            [ "978-84", "Spain", "9700000-9999999", 4 ],
+            [ "978-85", "Brazil", "0000000-1999999", 2 ],
+            [ "978-85", "Brazil", "2000000-4549999", 3 ],
+            [ "978-85", "Brazil", "4550000-4552999", 6 ],
+            [ "978-85", "Brazil", "4553000-4559999", 5 ],
+            [ "978-85", "Brazil", "4560000-5289999", 3 ],
+            [ "978-85", "Brazil", "5290000-5319999", 5 ],
+            [ "978-85", "Brazil", "5320000-5339999", 4 ],
+            [ "978-85", "Brazil", "5340000-5399999", 3 ],
+            [ "978-85", "Brazil", "5400000-5402999", 5 ],
+            [ "978-85", "Brazil", "5403000-5403999", 5 ],
+            [ "978-85", "Brazil", "5404000-5404999", 6 ],
+            [ "978-85", "Brazil", "5405000-5408999", 5 ],
+            [ "978-85", "Brazil", "5409000-5409999", 6 ],
+            [ "978-85", "Brazil", "5410000-5439999", 5 ],
+            [ "978-85", "Brazil", "5440000-5479999", 4 ],
+            [ "978-85", "Brazil", "5480000-5499999", 5 ],
+            [ "978-85", "Brazil", "5500000-5999999", 4 ],
+            [ "978-85", "Brazil", "6000000-6999999", 5 ],
+            [ "978-85", "Brazil", "7000000-8499999", 4 ],
+            [ "978-85", "Brazil", "8500000-8999999", 5 ],
+            [ "978-85", "Brazil", "9000000-9249999", 6 ],
+            [ "978-85", "Brazil", "9250000-9449999", 5 ],
+            [ "978-85", "Brazil", "9450000-9599999", 4 ],
+            [ "978-85", "Brazil", "9600000-9799999", 2 ],
+            [ "978-85", "Brazil", "9800000-9999999", 5 ],
+            [ "978-86", "former Yugoslavia", "0000000-2999999", 2 ],
+            [ "978-86", "former Yugoslavia", "3000000-5999999", 3 ],
+            [ "978-86", "former Yugoslavia", "6000000-7999999", 4 ],
+            [ "978-86", "former Yugoslavia", "8000000-8999999", 5 ],
+            [ "978-86", "former Yugoslavia", "9000000-9999999", 6 ],
+            [ "978-87", "Denmark", "0000000-2999999", 2 ],
+            [ "978-87", "Denmark", "3000000-3999999", 0 ],
+            [ "978-87", "Denmark", "4000000-6499999", 3 ],
+            [ "978-87", "Denmark", "6500000-6999999", 0 ],
+            [ "978-87", "Denmark", "7000000-7999999", 4 ],
+            [ "978-87", "Denmark", "8000000-8499999", 0 ],
+            [ "978-87", "Denmark", "8500000-9499999", 5 ],
+            [ "978-87", "Denmark", "9500000-9699999", 0 ],
+            [ "978-87", "Denmark", "9700000-9999999", 6 ],
+            [ "978-88", "Italy", "0000000-1999999", 2 ],
+            [ "978-88", "Italy", "2000000-3119999", 3 ],
+            [ "978-88", "Italy", "3120000-3149999", 5 ],
+            [ "978-88", "Italy", "3150000-3189999", 3 ],
+            [ "978-88", "Italy", "3190000-3229999", 5 ],
+            [ "978-88", "Italy", "3230000-3269999", 3 ],
+            [ "978-88", "Italy", "3270000-3389999", 4 ],
+            [ "978-88", "Italy", "3390000-3609999", 3 ],
+            [ "978-88", "Italy", "3610000-3629999", 4 ],
+            [ "978-88", "Italy", "3630000-5489999", 3 ],
+            [ "978-88", "Italy", "5490000-5549999", 4 ],
+            [ "978-88", "Italy", "5550000-5999999", 3 ],
+            [ "978-88", "Italy", "6000000-8499999", 4 ],
+            [ "978-88", "Italy", "8500000-8999999", 5 ],
+            [ "978-88", "Italy", "9000000-9099999", 6 ],
+            [ "978-88", "Italy", "9100000-9269999", 3 ],
+            [ "978-88", "Italy", "9270000-9399999", 4 ],
+            [ "978-88", "Italy", "9400000-9479999", 6 ],
+            [ "978-88", "Italy", "9480000-9999999", 5 ],
+            [ "978-89", "Korea, Republic", "0000000-2499999", 2 ],
+            [ "978-89", "Korea, Republic", "2500000-5499999", 3 ],
+            [ "978-89", "Korea, Republic", "5500000-8499999", 4 ],
+            [ "978-89", "Korea, Republic", "8500000-9499999", 5 ],
+            [ "978-89", "Korea, Republic", "9500000-9699999", 6 ],
+            [ "978-89", "Korea, Republic", "9700000-9899999", 5 ],
+            [ "978-89", "Korea, Republic", "9900000-9999999", 3 ],
+            [ "978-90", "Netherlands", "0000000-1999999", 2 ],
+            [ "978-90", "Netherlands", "2000000-4999999", 3 ],
+            [ "978-90", "Netherlands", "5000000-6999999", 4 ],
+            [ "978-90", "Netherlands", "7000000-7999999", 5 ],
+            [ "978-90", "Netherlands", "8000000-8499999", 6 ],
+            [ "978-90", "Netherlands", "8500000-8999999", 4 ],
+            [ "978-90", "Netherlands", "9000000-9099999", 2 ],
+            [ "978-90", "Netherlands", "9100000-9399999", 0 ],
+            [ "978-90", "Netherlands", "9400000-9499999", 2 ],
+            [ "978-90", "Netherlands", "9500000-9999999", 0 ],
+            [ "978-91", "Sweden", "0000000-1999999", 1 ],
+            [ "978-91", "Sweden", "2000000-4999999", 2 ],
+            [ "978-91", "Sweden", "5000000-6499999", 3 ],
+            [ "978-91", "Sweden", "6500000-6999999", 0 ],
+            [ "978-91", "Sweden", "7000000-8199999", 4 ],
+            [ "978-91", "Sweden", "8200000-8499999", 0 ],
+            [ "978-91", "Sweden", "8500000-9499999", 5 ],
+            [ "978-91", "Sweden", "9500000-9699999", 0 ],
+            [ "978-91", "Sweden", "9700000-9999999", 6 ],
+            [ "978-92", "International NGO Publishers and EU Organizations", "0000000-5999999", 1 ],
+            [ "978-92", "International NGO Publishers and EU Organizations", "6000000-7999999", 2 ],
+            [ "978-92", "International NGO Publishers and EU Organizations", "8000000-8999999", 3 ],
+            [ "978-92", "International NGO Publishers and EU Organizations", "9000000-9499999", 4 ],
+            [ "978-92", "International NGO Publishers and EU Organizations", "9500000-9899999", 5 ],
+            [ "978-92", "International NGO Publishers and EU Organizations", "9900000-9999999", 6 ],
+            [ "978-93", "India", "0000000-0999999", 2 ],
+            [ "978-93", "India", "1000000-4999999", 3 ],
+            [ "978-93", "India", "5000000-7999999", 4 ],
+            [ "978-93", "India", "8000000-9499999", 5 ],
+            [ "978-93", "India", "9500000-9999999", 6 ],
+            [ "978-94", "Netherlands", "0000000-5999999", 3 ],
+            [ "978-94", "Netherlands", "6000000-8999999", 4 ],
+            [ "978-94", "Netherlands", "9000000-9999999", 5 ],
+            [ "978-950", "Argentina", "0000000-4999999", 2 ],
+            [ "978-950", "Argentina", "5000000-8999999", 3 ],
+            [ "978-950", "Argentina", "9000000-9899999", 4 ],
+            [ "978-950", "Argentina", "9900000-9999999", 5 ],
+            [ "978-951", "Finland", "0000000-1999999", 1 ],
+            [ "978-951", "Finland", "2000000-5499999", 2 ],
+            [ "978-951", "Finland", "5500000-8899999", 3 ],
+            [ "978-951", "Finland", "8900000-9499999", 4 ],
+            [ "978-951", "Finland", "9500000-9999999", 5 ],
+            [ "978-952", "Finland", "0000000-1999999", 2 ],
+            [ "978-952", "Finland", "2000000-4999999", 3 ],
+            [ "978-952", "Finland", "5000000-5999999", 4 ],
+            [ "978-952", "Finland", "6000000-6599999", 2 ],
+            [ "978-952", "Finland", "6600000-6699999", 4 ],
+            [ "978-952", "Finland", "6700000-6999999", 5 ],
+            [ "978-952", "Finland", "7000000-7999999", 4 ],
+            [ "978-952", "Finland", "8000000-9499999", 2 ],
+            [ "978-952", "Finland", "9500000-9899999", 4 ],
+            [ "978-952", "Finland", "9900000-9999999", 5 ],
+            [ "978-953", "Croatia", "0000000-0999999", 1 ],
+            [ "978-953", "Croatia", "1000000-1499999", 2 ],
+            [ "978-953", "Croatia", "1500000-4799999", 3 ],
+            [ "978-953", "Croatia", "4800000-4999999", 5 ],
+            [ "978-953", "Croatia", "5000000-5009999", 3 ],
+            [ "978-953", "Croatia", "5010000-5099999", 5 ],
+            [ "978-953", "Croatia", "5100000-5499999", 2 ],
+            [ "978-953", "Croatia", "5500000-5999999", 5 ],
+            [ "978-953", "Croatia", "6000000-9499999", 4 ],
+            [ "978-953", "Croatia", "9500000-9999999", 5 ],
+            [ "978-954", "Bulgaria", "0000000-2899999", 2 ],
+            [ "978-954", "Bulgaria", "2900000-2999999", 4 ],
+            [ "978-954", "Bulgaria", "3000000-7999999", 3 ],
+            [ "978-954", "Bulgaria", "8000000-8999999", 4 ],
+            [ "978-954", "Bulgaria", "9000000-9299999", 5 ],
+            [ "978-954", "Bulgaria", "9300000-9999999", 4 ],
+            [ "978-955", "Sri Lanka", "0000000-1999999", 4 ],
+            [ "978-955", "Sri Lanka", "2000000-3399999", 2 ],
+            [ "978-955", "Sri Lanka", "3400000-3549999", 4 ],
+            [ "978-955", "Sri Lanka", "3550000-3599999", 5 ],
+            [ "978-955", "Sri Lanka", "3600000-3799999", 4 ],
+            [ "978-955", "Sri Lanka", "3800000-3899999", 5 ],
+            [ "978-955", "Sri Lanka", "3900000-4099999", 4 ],
+            [ "978-955", "Sri Lanka", "4100000-4499999", 5 ],
+            [ "978-955", "Sri Lanka", "4500000-4999999", 4 ],
+            [ "978-955", "Sri Lanka", "5000000-5499999", 5 ],
+            [ "978-955", "Sri Lanka", "5500000-7109999", 3 ],
+            [ "978-955", "Sri Lanka", "7110000-7149999", 5 ],
+            [ "978-955", "Sri Lanka", "7150000-9499999", 4 ],
+            [ "978-955", "Sri Lanka", "9500000-9999999", 5 ],
+            [ "978-956", "Chile", "0000000-0899999", 2 ],
+            [ "978-956", "Chile", "0900000-0999999", 5 ],
+            [ "978-956", "Chile", "1000000-1999999", 2 ],
+            [ "978-956", "Chile", "2000000-5999999", 3 ],
+            [ "978-956", "Chile", "6000000-6999999", 4 ],
+            [ "978-956", "Chile", "7000000-9999999", 4 ],
+            [ "978-957", "Taiwan", "0000000-0299999", 2 ],
+            [ "978-957", "Taiwan", "0300000-0499999", 4 ],
+            [ "978-957", "Taiwan", "0500000-1999999", 2 ],
+            [ "978-957", "Taiwan", "2000000-2099999", 4 ],
+            [ "978-957", "Taiwan", "2100000-2799999", 2 ],
+            [ "978-957", "Taiwan", "2800000-3099999", 5 ],
+            [ "978-957", "Taiwan", "3100000-4399999", 2 ],
+            [ "978-957", "Taiwan", "4400000-8199999", 3 ],
+            [ "978-957", "Taiwan", "8200000-9699999", 4 ],
+            [ "978-957", "Taiwan", "9700000-9999999", 5 ],
+            [ "978-958", "Colombia", "0000000-4999999", 2 ],
+            [ "978-958", "Colombia", "5000000-5099999", 3 ],
+            [ "978-958", "Colombia", "5100000-5199999", 4 ],
+            [ "978-958", "Colombia", "5200000-5399999", 5 ],
+            [ "978-958", "Colombia", "5400000-5599999", 4 ],
+            [ "978-958", "Colombia", "5600000-5999999", 5 ],
+            [ "978-958", "Colombia", "6000000-7999999", 3 ],
+            [ "978-958", "Colombia", "8000000-9499999", 4 ],
+            [ "978-958", "Colombia", "9500000-9999999", 5 ],
+            [ "978-959", "Cuba", "0000000-1999999", 2 ],
+            [ "978-959", "Cuba", "2000000-6999999", 3 ],
+            [ "978-959", "Cuba", "7000000-8499999", 4 ],
+            [ "978-959", "Cuba", "8500000-9999999", 5 ],
+            [ "978-960", "Greece", "0000000-1999999", 2 ],
+            [ "978-960", "Greece", "2000000-6599999", 3 ],
+            [ "978-960", "Greece", "6600000-6899999", 4 ],
+            [ "978-960", "Greece", "6900000-6999999", 3 ],
+            [ "978-960", "Greece", "7000000-8499999", 4 ],
+            [ "978-960", "Greece", "8500000-9299999", 5 ],
+            [ "978-960", "Greece", "9300000-9399999", 2 ],
+            [ "978-960", "Greece", "9400000-9799999", 4 ],
+            [ "978-960", "Greece", "9800000-9999999", 5 ],
+            [ "978-961", "Slovenia", "0000000-1999999", 2 ],
+            [ "978-961", "Slovenia", "2000000-5999999", 3 ],
+            [ "978-961", "Slovenia", "6000000-8999999", 4 ],
+            [ "978-961", "Slovenia", "9000000-9599999", 5 ],
+            [ "978-961", "Slovenia", "9600000-9999999", 0 ],
+            [ "978-962", "Hong Kong, China", "0000000-1999999", 2 ],
+            [ "978-962", "Hong Kong, China", "2000000-6999999", 3 ],
+            [ "978-962", "Hong Kong, China", "7000000-8499999", 4 ],
+            [ "978-962", "Hong Kong, China", "8500000-8699999", 5 ],
+            [ "978-962", "Hong Kong, China", "8700000-8999999", 4 ],
+            [ "978-962", "Hong Kong, China", "9000000-9999999", 3 ],
+            [ "978-963", "Hungary", "0000000-1999999", 2 ],
+            [ "978-963", "Hungary", "2000000-6999999", 3 ],
+            [ "978-963", "Hungary", "7000000-8499999", 4 ],
+            [ "978-963", "Hungary", "8500000-8999999", 5 ],
+            [ "978-963", "Hungary", "9000000-9999999", 4 ],
+            [ "978-964", "Iran", "0000000-1499999", 2 ],
+            [ "978-964", "Iran", "1500000-2499999", 3 ],
+            [ "978-964", "Iran", "2500000-2999999", 4 ],
+            [ "978-964", "Iran", "3000000-5499999", 3 ],
+            [ "978-964", "Iran", "5500000-8999999", 4 ],
+            [ "978-964", "Iran", "9000000-9699999", 5 ],
+            [ "978-964", "Iran", "9700000-9899999", 3 ],
+            [ "978-964", "Iran", "9900000-9999999", 4 ],
+            [ "978-965", "Israel", "0000000-1999999", 2 ],
+            [ "978-965", "Israel", "2000000-5999999", 3 ],
+            [ "978-965", "Israel", "6000000-6999999", 0 ],
+            [ "978-965", "Israel", "7000000-7999999", 4 ],
+            [ "978-965", "Israel", "8000000-8999999", 0 ],
+            [ "978-965", "Israel", "9000000-9999999", 5 ],
+            [ "978-966", "Ukraine", "0000000-1299999", 2 ],
+            [ "978-966", "Ukraine", "1300000-1399999", 3 ],
+            [ "978-966", "Ukraine", "1400000-1499999", 2 ],
+            [ "978-966", "Ukraine", "1500000-1699999", 4 ],
+            [ "978-966", "Ukraine", "1700000-1999999", 3 ],
+            [ "978-966", "Ukraine", "2000000-2789999", 4 ],
+            [ "978-966", "Ukraine", "2790000-2899999", 3 ],
+            [ "978-966", "Ukraine", "2900000-2999999", 4 ],
+            [ "978-966", "Ukraine", "3000000-6999999", 3 ],
+            [ "978-966", "Ukraine", "7000000-8999999", 4 ],
+            [ "978-966", "Ukraine", "9000000-9099999", 5 ],
+            [ "978-966", "Ukraine", "9100000-9499999", 3 ],
+            [ "978-966", "Ukraine", "9500000-9799999", 5 ],
+            [ "978-966", "Ukraine", "9800000-9999999", 3 ],
+            [ "978-967", "Malaysia", "0000000-0099999", 2 ],
+            [ "978-967", "Malaysia", "0100000-0999999", 4 ],
+            [ "978-967", "Malaysia", "1000000-1999999", 5 ],
+            [ "978-967", "Malaysia", "2000000-2499999", 4 ],
+            [ "978-967", "Malaysia", "2500000-2549999", 3 ],
+            [ "978-967", "Malaysia", "2550000-2699999", 5 ],
+            [ "978-967", "Malaysia", "2700000-2799999", 4 ],
+            [ "978-967", "Malaysia", "2800000-2999999", 4 ],
+            [ "978-967", "Malaysia", "3000000-4999999", 3 ],
+            [ "978-967", "Malaysia", "5000000-5999999", 4 ],
+            [ "978-967", "Malaysia", "6000000-8999999", 2 ],
+            [ "978-967", "Malaysia", "9000000-9899999", 3 ],
+            [ "978-967", "Malaysia", "9900000-9989999", 4 ],
+            [ "978-967", "Malaysia", "9990000-9999999", 5 ],
+            [ "978-968", "Mexico", "0100000-3999999", 2 ],
+            [ "978-968", "Mexico", "4000000-4999999", 3 ],
+            [ "978-968", "Mexico", "5000000-7999999", 4 ],
+            [ "978-968", "Mexico", "8000000-8999999", 3 ],
+            [ "978-968", "Mexico", "9000000-9999999", 4 ],
+            [ "978-969", "Pakistan", "0000000-1999999", 1 ],
+            [ "978-969", "Pakistan", "2000000-2099999", 2 ],
+            [ "978-969", "Pakistan", "2100000-2199999", 3 ],
+            [ "978-969", "Pakistan", "2200000-2299999", 4 ],
+            [ "978-969", "Pakistan", "2300000-2399999", 5 ],
+            [ "978-969", "Pakistan", "2400000-3999999", 2 ],
+            [ "978-969", "Pakistan", "4000000-7499999", 3 ],
+            [ "978-969", "Pakistan", "7500000-9999999", 4 ],
+            [ "978-970", "Mexico", "0100000-5999999", 2 ],
+            [ "978-970", "Mexico", "6000000-8999999", 3 ],
+            [ "978-970", "Mexico", "9000000-9099999", 4 ],
+            [ "978-970", "Mexico", "9100000-9699999", 5 ],
+            [ "978-970", "Mexico", "9700000-9999999", 4 ],
+            [ "978-971", "Philippines", "0000000-0159999", 3 ],
+            [ "978-971", "Philippines", "0160000-0199999", 4 ],
+            [ "978-971", "Philippines", "0200000-0299999", 2 ],
+            [ "978-971", "Philippines", "0300000-0599999", 4 ],
+            [ "978-971", "Philippines", "0600000-4999999", 2 ],
+            [ "978-971", "Philippines", "5000000-8499999", 3 ],
+            [ "978-971", "Philippines", "8500000-9099999", 4 ],
+            [ "978-971", "Philippines", "9100000-9599999", 5 ],
+            [ "978-971", "Philippines", "9600000-9699999", 4 ],
+            [ "978-971", "Philippines", "9700000-9899999", 2 ],
+            [ "978-971", "Philippines", "9900000-9999999", 4 ],
+            [ "978-972", "Portugal", "0000000-1999999", 1 ],
+            [ "978-972", "Portugal", "2000000-5499999", 2 ],
+            [ "978-972", "Portugal", "5500000-7999999", 3 ],
+            [ "978-972", "Portugal", "8000000-9499999", 4 ],
+            [ "978-972", "Portugal", "9500000-9999999", 5 ],
+            [ "978-973", "Romania", "0000000-0999999", 1 ],
+            [ "978-973", "Romania", "1000000-1699999", 3 ],
+            [ "978-973", "Romania", "1700000-1999999", 4 ],
+            [ "978-973", "Romania", "2000000-5499999", 2 ],
+            [ "978-973", "Romania", "5500000-7599999", 3 ],
+            [ "978-973", "Romania", "7600000-8499999", 4 ],
+            [ "978-973", "Romania", "8500000-8899999", 5 ],
+            [ "978-973", "Romania", "8900000-9499999", 4 ],
+            [ "978-973", "Romania", "9500000-9999999", 5 ],
+            [ "978-974", "Thailand", "0000000-1999999", 2 ],
+            [ "978-974", "Thailand", "2000000-6999999", 3 ],
+            [ "978-974", "Thailand", "7000000-8499999", 4 ],
+            [ "978-974", "Thailand", "8500000-8999999", 5 ],
+            [ "978-974", "Thailand", "9000000-9499999", 5 ],
+            [ "978-974", "Thailand", "9500000-9999999", 4 ],
+            [ "978-975", "Turkey", "0000000-0199999", 5 ],
+            [ "978-975", "Turkey", "0200000-2399999", 2 ],
+            [ "978-975", "Turkey", "2400000-2499999", 4 ],
+            [ "978-975", "Turkey", "2500000-5999999", 3 ],
+            [ "978-975", "Turkey", "6000000-9199999", 4 ],
+            [ "978-975", "Turkey", "9200000-9899999", 5 ],
+            [ "978-975", "Turkey", "9900000-9999999", 3 ],
+            [ "978-976", "Caribbean Community", "0000000-3999999", 1 ],
+            [ "978-976", "Caribbean Community", "4000000-5999999", 2 ],
+            [ "978-976", "Caribbean Community", "6000000-7999999", 3 ],
+            [ "978-976", "Caribbean Community", "8000000-9499999", 4 ],
+            [ "978-976", "Caribbean Community", "9500000-9999999", 5 ],
+            [ "978-977", "Egypt", "0000000-1999999", 2 ],
+            [ "978-977", "Egypt", "2000000-4999999", 3 ],
+            [ "978-977", "Egypt", "5000000-6999999", 4 ],
+            [ "978-977", "Egypt", "7000000-8499999", 3 ],
+            [ "978-977", "Egypt", "8500000-8999999", 5 ],
+            [ "978-977", "Egypt", "9000000-9899999", 2 ],
+            [ "978-977", "Egypt", "9900000-9999999", 3 ],
+            [ "978-978", "Nigeria", "0000000-1999999", 3 ],
+            [ "978-978", "Nigeria", "2000000-2999999", 4 ],
+            [ "978-978", "Nigeria", "3000000-7999999", 5 ],
+            [ "978-978", "Nigeria", "8000000-8999999", 4 ],
+            [ "978-978", "Nigeria", "9000000-9999999", 3 ],
+            [ "978-979", "Indonesia", "0000000-0999999", 3 ],
+            [ "978-979", "Indonesia", "1000000-1499999", 4 ],
+            [ "978-979", "Indonesia", "1500000-1999999", 5 ],
+            [ "978-979", "Indonesia", "2000000-2999999", 2 ],
+            [ "978-979", "Indonesia", "3000000-3999999", 4 ],
+            [ "978-979", "Indonesia", "4000000-7999999", 3 ],
+            [ "978-979", "Indonesia", "8000000-9499999", 4 ],
+            [ "978-979", "Indonesia", "9500000-9999999", 5 ],
+            [ "978-980", "Venezuela", "0000000-1999999", 2 ],
+            [ "978-980", "Venezuela", "2000000-5999999", 3 ],
+            [ "978-980", "Venezuela", "6000000-9999999", 4 ],
+            [ "978-981", "Singapore", "0000000-1699999", 2 ],
+            [ "978-981", "Singapore", "1700000-1799999", 5 ],
+            [ "978-981", "Singapore", "1800000-1999999", 2 ],
+            [ "978-981", "Singapore", "2000000-2999999", 3 ],
+            [ "978-981", "Singapore", "3000000-3099999", 4 ],
+            [ "978-981", "Singapore", "3100000-3999999", 3 ],
+            [ "978-981", "Singapore", "4000000-9999999", 4 ],
+            [ "978-982", "South Pacific", "0000000-0999999", 2 ],
+            [ "978-982", "South Pacific", "1000000-6999999", 3 ],
+            [ "978-982", "South Pacific", "7000000-8999999", 2 ],
+            [ "978-982", "South Pacific", "9000000-9799999", 4 ],
+            [ "978-982", "South Pacific", "9800000-9999999", 5 ],
+            [ "978-983", "Malaysia", "0000000-0199999", 2 ],
+            [ "978-983", "Malaysia", "0200000-1999999", 3 ],
+            [ "978-983", "Malaysia", "2000000-3999999", 4 ],
+            [ "978-983", "Malaysia", "4000000-4499999", 5 ],
+            [ "978-983", "Malaysia", "4500000-4999999", 2 ],
+            [ "978-983", "Malaysia", "5000000-7999999", 2 ],
+            [ "978-983", "Malaysia", "8000000-8999999", 3 ],
+            [ "978-983", "Malaysia", "9000000-9899999", 4 ],
+            [ "978-983", "Malaysia", "9900000-9999999", 5 ],
+            [ "978-984", "Bangladesh", "0000000-3999999", 2 ],
+            [ "978-984", "Bangladesh", "4000000-7999999", 3 ],
+            [ "978-984", "Bangladesh", "8000000-8999999", 4 ],
+            [ "978-984", "Bangladesh", "9000000-9999999", 5 ],
+            [ "978-985", "Belarus", "0000000-3999999", 2 ],
+            [ "978-985", "Belarus", "4000000-5999999", 3 ],
+            [ "978-985", "Belarus", "6000000-8799999", 4 ],
+            [ "978-985", "Belarus", "8800000-8999999", 3 ],
+            [ "978-985", "Belarus", "9000000-9999999", 5 ],
+            [ "978-986", "Taiwan", "0000000-0599999", 2 ],
+            [ "978-986", "Taiwan", "0600000-0699999", 5 ],
+            [ "978-986", "Taiwan", "0700000-0799999", 4 ],
+            [ "978-986", "Taiwan", "0800000-1199999", 2 ],
+            [ "978-986", "Taiwan", "1200000-5399999", 3 ],
+            [ "978-986", "Taiwan", "5400000-7999999", 4 ],
+            [ "978-986", "Taiwan", "8000000-9999999", 5 ],
+            [ "978-987", "Argentina", "0000000-0999999", 2 ],
+            [ "978-987", "Argentina", "1000000-1999999", 4 ],
+            [ "978-987", "Argentina", "2000000-2999999", 5 ],
+            [ "978-987", "Argentina", "3000000-3599999", 2 ],
+            [ "978-987", "Argentina", "3600000-4199999", 4 ],
+            [ "978-987", "Argentina", "4200000-4399999", 2 ],
+            [ "978-987", "Argentina", "4400000-4499999", 4 ],
+            [ "978-987", "Argentina", "4500000-4899999", 5 ],
+            [ "978-987", "Argentina", "4900000-4999999", 4 ],
+            [ "978-987", "Argentina", "5000000-8299999", 3 ],
+            [ "978-987", "Argentina", "8300000-8499999", 4 ],
+            [ "978-987", "Argentina", "8500000-8899999", 2 ],
+            [ "978-987", "Argentina", "8900000-9499999", 4 ],
+            [ "978-987", "Argentina", "9500000-9999999", 5 ],
+            [ "978-988", "Hong Kong, China", "0000000-1199999", 2 ],
+            [ "978-988", "Hong Kong, China", "1200000-1999999", 5 ],
+            [ "978-988", "Hong Kong, China", "2000000-7399999", 3 ],
+            [ "978-988", "Hong Kong, China", "7400000-7699999", 5 ],
+            [ "978-988", "Hong Kong, China", "7700000-7999999", 5 ],
+            [ "978-988", "Hong Kong, China", "8000000-9699999", 4 ],
+            [ "978-988", "Hong Kong, China", "9700000-9999999", 5 ],
+            [ "978-989", "Portugal", "0000000-1999999", 1 ],
+            [ "978-989", "Portugal", "2000000-3499999", 2 ],
+            [ "978-989", "Portugal", "3500000-3699999", 5 ],
+            [ "978-989", "Portugal", "3700000-5299999", 2 ],
+            [ "978-989", "Portugal", "5300000-5499999", 5 ],
+            [ "978-989", "Portugal", "5500000-7999999", 3 ],
+            [ "978-989", "Portugal", "8000000-9499999", 4 ],
+            [ "978-989", "Portugal", "9500000-9999999", 5 ],
+            [ "978-9912", "Tanzania", "0000000-3999999", 0 ],
+            [ "978-9912", "Tanzania", "4000000-4499999", 2 ],
+            [ "978-9912", "Tanzania", "4500000-7499999", 0 ],
+            [ "978-9912", "Tanzania", "7500000-7999999", 3 ],
+            [ "978-9912", "Tanzania", "8000000-9849999", 0 ],
+            [ "978-9912", "Tanzania", "9850000-9999999", 4 ],
+            [ "978-9913", "Uganda", "0000000-0499999", 2 ],
+            [ "978-9913", "Uganda", "0500000-5999999", 0 ],
+            [ "978-9913", "Uganda", "6000000-6499999", 3 ],
+            [ "978-9913", "Uganda", "6500000-9799999", 0 ],
+            [ "978-9913", "Uganda", "9800000-9999999", 4 ],
+            [ "978-9914", "Kenya", "0000000-3999999", 0 ],
+            [ "978-9914", "Kenya", "4000000-4499999", 2 ],
+            [ "978-9914", "Kenya", "4500000-6999999", 0 ],
+            [ "978-9914", "Kenya", "7000000-7499999", 3 ],
+            [ "978-9914", "Kenya", "7500000-9849999", 0 ],
+            [ "978-9914", "Kenya", "9850000-9999999", 4 ],
+            [ "978-9915", "Uruguay", "0000000-3999999", 0 ],
+            [ "978-9915", "Uruguay", "4000000-5999999", 2 ],
+            [ "978-9915", "Uruguay", "6000000-6499999", 0 ],
+            [ "978-9915", "Uruguay", "6500000-7999999", 3 ],
+            [ "978-9915", "Uruguay", "8000000-9299999", 0 ],
+            [ "978-9915", "Uruguay", "9300000-9999999", 4 ],
+            [ "978-9916", "Estonia", "0000000-0999999", 1 ],
+            [ "978-9916", "Estonia", "1000000-3999999", 2 ],
+            [ "978-9916", "Estonia", "4000000-4999999", 1 ],
+            [ "978-9916", "Estonia", "5000000-5999999", 0 ],
+            [ "978-9916", "Estonia", "6000000-7499999", 3 ],
+            [ "978-9916", "Estonia", "7500000-9499999", 0 ],
+            [ "978-9916", "Estonia", "9500000-9999999", 4 ],
+            [ "978-9917", "Bolivia", "0000000-0999999", 1 ],
+            [ "978-9917", "Bolivia", "1000000-2999999", 0 ],
+            [ "978-9917", "Bolivia", "3000000-3499999", 2 ],
+            [ "978-9917", "Bolivia", "3500000-5999999", 0 ],
+            [ "978-9917", "Bolivia", "6000000-6999999", 3 ],
+            [ "978-9917", "Bolivia", "7000000-9799999", 0 ],
+            [ "978-9917", "Bolivia", "9800000-9999999", 4 ],
+            [ "978-9918", "Malta", "0000000-0999999", 1 ],
+            [ "978-9918", "Malta", "1000000-1999999", 0 ],
+            [ "978-9918", "Malta", "2000000-2999999", 2 ],
+            [ "978-9918", "Malta", "3000000-5999999", 0 ],
+            [ "978-9918", "Malta", "6000000-7999999", 3 ],
+            [ "978-9918", "Malta", "8000000-9499999", 0 ],
+            [ "978-9918", "Malta", "9500000-9999999", 4 ],
+            [ "978-9919", "Mongolia", "0000000-1999999", 0 ],
+            [ "978-9919", "Mongolia", "2000000-2799999", 2 ],
+            [ "978-9919", "Mongolia", "2800000-4999999", 0 ],
+            [ "978-9919", "Mongolia", "5000000-5999999", 3 ],
+            [ "978-9919", "Mongolia", "6000000-9499999", 0 ],
+            [ "978-9919", "Mongolia", "9500000-9999999", 4 ],
+            [ "978-9920", "Morocco", "0000000-3199999", 0 ],
+            [ "978-9920", "Morocco", "3200000-3999999", 2 ],
+            [ "978-9920", "Morocco", "4000000-5499999", 0 ],
+            [ "978-9920", "Morocco", "5500000-7999999", 3 ],
+            [ "978-9920", "Morocco", "8000000-8999999", 0 ],
+            [ "978-9920", "Morocco", "9000000-9999999", 4 ],
+            [ "978-9921", "Kuwait", "0000000-0999999", 1 ],
+            [ "978-9921", "Kuwait", "1000000-2999999", 0 ],
+            [ "978-9921", "Kuwait", "3000000-3999999", 2 ],
+            [ "978-9921", "Kuwait", "4000000-6999999", 0 ],
+            [ "978-9921", "Kuwait", "7000000-8999999", 3 ],
+            [ "978-9921", "Kuwait", "9000000-9699999", 0 ],
+            [ "978-9921", "Kuwait", "9700000-9999999", 4 ],
+            [ "978-9922", "Iraq", "0000000-1999999", 0 ],
+            [ "978-9922", "Iraq", "2000000-2999999", 2 ],
+            [ "978-9922", "Iraq", "3000000-5999999", 0 ],
+            [ "978-9922", "Iraq", "6000000-7999999", 3 ],
+            [ "978-9922", "Iraq", "8000000-8999999", 0 ],
+            [ "978-9922", "Iraq", "9000000-9999999", 4 ],
+            [ "978-9923", "Jordan", "0000000-0999999", 1 ],
+            [ "978-9923", "Jordan", "1000000-4999999", 2 ],
+            [ "978-9923", "Jordan", "5000000-6999999", 0 ],
+            [ "978-9923", "Jordan", "7000000-8999999", 3 ],
+            [ "978-9923", "Jordan", "9000000-9699999", 0 ],
+            [ "978-9923", "Jordan", "9700000-9999999", 4 ],
+            [ "978-9924", "Cambodia", "0000000-2999999", 0 ],
+            [ "978-9924", "Cambodia", "3000000-3999999", 2 ],
+            [ "978-9924", "Cambodia", "4000000-4999999", 0 ],
+            [ "978-9924", "Cambodia", "5000000-6499999", 3 ],
+            [ "978-9924", "Cambodia", "6500000-8999999", 0 ],
+            [ "978-9924", "Cambodia", "9000000-9999999", 4 ],
+            [ "978-9925", "Cyprus", "0000000-2999999", 1 ],
+            [ "978-9925", "Cyprus", "3000000-5499999", 2 ],
+            [ "978-9925", "Cyprus", "5500000-7349999", 3 ],
+            [ "978-9925", "Cyprus", "7350000-9999999", 4 ],
+            [ "978-9926", "Bosnia and Herzegovina", "0000000-1999999", 1 ],
+            [ "978-9926", "Bosnia and Herzegovina", "2000000-3999999", 2 ],
+            [ "978-9926", "Bosnia and Herzegovina", "4000000-7999999", 3 ],
+            [ "978-9926", "Bosnia and Herzegovina", "8000000-9999999", 4 ],
+            [ "978-9927", "Qatar", "0000000-0999999", 2 ],
+            [ "978-9927", "Qatar", "1000000-3999999", 3 ],
+            [ "978-9927", "Qatar", "4000000-4999999", 4 ],
+            [ "978-9927", "Qatar", "5000000-9999999", 0 ],
+            [ "978-9928", "Albania", "0000000-0999999", 2 ],
+            [ "978-9928", "Albania", "1000000-3999999", 3 ],
+            [ "978-9928", "Albania", "4000000-4999999", 4 ],
+            [ "978-9928", "Albania", "5000000-9999999", 0 ],
+            [ "978-9929", "Guatemala", "0000000-3999999", 1 ],
+            [ "978-9929", "Guatemala", "4000000-5499999", 2 ],
+            [ "978-9929", "Guatemala", "5500000-7999999", 3 ],
+            [ "978-9929", "Guatemala", "8000000-9999999", 4 ],
+            [ "978-9930", "Costa Rica", "0000000-4999999", 2 ],
+            [ "978-9930", "Costa Rica", "5000000-9399999", 3 ],
+            [ "978-9930", "Costa Rica", "9400000-9999999", 4 ],
+            [ "978-9931", "Algeria", "0000000-2999999", 2 ],
+            [ "978-9931", "Algeria", "3000000-8999999", 3 ],
+            [ "978-9931", "Algeria", "9000000-9999999", 4 ],
+            [ "978-9932", "Lao People's Democratic Republic", "0000000-3999999", 2 ],
+            [ "978-9932", "Lao People's Democratic Republic", "4000000-8499999", 3 ],
+            [ "978-9932", "Lao People's Democratic Republic", "8500000-9999999", 4 ],
+            [ "978-9933", "Syria", "0000000-0999999", 1 ],
+            [ "978-9933", "Syria", "1000000-3999999", 2 ],
+            [ "978-9933", "Syria", "4000000-8999999", 3 ],
+            [ "978-9933", "Syria", "9000000-9999999", 4 ],
+            [ "978-9934", "Latvia", "0000000-0999999", 1 ],
+            [ "978-9934", "Latvia", "1000000-4999999", 2 ],
+            [ "978-9934", "Latvia", "5000000-7999999", 3 ],
+            [ "978-9934", "Latvia", "8000000-9999999", 4 ],
+            [ "978-9935", "Iceland", "0000000-0999999", 1 ],
+            [ "978-9935", "Iceland", "1000000-3999999", 2 ],
+            [ "978-9935", "Iceland", "4000000-8999999", 3 ],
+            [ "978-9935", "Iceland", "9000000-9999999", 4 ],
+            [ "978-9936", "Afghanistan", "0000000-1999999", 1 ],
+            [ "978-9936", "Afghanistan", "2000000-3999999", 2 ],
+            [ "978-9936", "Afghanistan", "4000000-7999999", 3 ],
+            [ "978-9936", "Afghanistan", "8000000-9999999", 4 ],
+            [ "978-9937", "Nepal", "0000000-2999999", 1 ],
+            [ "978-9937", "Nepal", "3000000-4999999", 2 ],
+            [ "978-9937", "Nepal", "5000000-7999999", 3 ],
+            [ "978-9937", "Nepal", "8000000-9999999", 4 ],
+            [ "978-9938", "Tunisia", "0000000-7999999", 2 ],
+            [ "978-9938", "Tunisia", "8000000-9499999", 3 ],
+            [ "978-9938", "Tunisia", "9500000-9999999", 4 ],
+            [ "978-9939", "Armenia", "0000000-4999999", 1 ],
+            [ "978-9939", "Armenia", "5000000-7999999", 2 ],
+            [ "978-9939", "Armenia", "8000000-8999999", 3 ],
+            [ "978-9939", "Armenia", "9000000-9799999", 4 ],
+            [ "978-9939", "Armenia", "9800000-9999999", 2 ],
+            [ "978-9940", "Montenegro", "0000000-1999999", 1 ],
+            [ "978-9940", "Montenegro", "2000000-4999999", 2 ],
+            [ "978-9940", "Montenegro", "5000000-8399999", 3 ],
+            [ "978-9940", "Montenegro", "8400000-8699999", 2 ],
+            [ "978-9940", "Montenegro", "8700000-9999999", 4 ],
+            [ "978-9941", "Georgia", "0000000-0999999", 1 ],
+            [ "978-9941", "Georgia", "1000000-3999999", 2 ],
+            [ "978-9941", "Georgia", "4000000-7999999", 3 ],
+            [ "978-9941", "Georgia", "8000000-8999999", 1 ],
+            [ "978-9941", "Georgia", "9000000-9999999", 4 ],
+            [ "978-9942", "Ecuador", "0000000-5999999", 2 ],
+            [ "978-9942", "Ecuador", "6000000-6999999", 3 ],
+            [ "978-9942", "Ecuador", "7000000-7499999", 4 ],
+            [ "978-9942", "Ecuador", "7500000-8499999", 3 ],
+            [ "978-9942", "Ecuador", "8500000-8999999", 4 ],
+            [ "978-9942", "Ecuador", "9000000-9849999", 3 ],
+            [ "978-9942", "Ecuador", "9850000-9999999", 4 ],
+            [ "978-9943", "Uzbekistan", "0000000-2999999", 2 ],
+            [ "978-9943", "Uzbekistan", "3000000-3999999", 3 ],
+            [ "978-9943", "Uzbekistan", "4000000-9749999", 4 ],
+            [ "978-9943", "Uzbekistan", "9750000-9999999", 3 ],
+            [ "978-9944", "Turkey", "0000000-0999999", 4 ],
+            [ "978-9944", "Turkey", "1000000-4999999", 3 ],
+            [ "978-9944", "Turkey", "5000000-5999999", 4 ],
+            [ "978-9944", "Turkey", "6000000-6999999", 2 ],
+            [ "978-9944", "Turkey", "7000000-7999999", 3 ],
+            [ "978-9944", "Turkey", "8000000-8999999", 2 ],
+            [ "978-9944", "Turkey", "9000000-9999999", 3 ],
+            [ "978-9945", "Dominican Republic", "0000000-0099999", 2 ],
+            [ "978-9945", "Dominican Republic", "0100000-0799999", 3 ],
+            [ "978-9945", "Dominican Republic", "0800000-3999999", 2 ],
+            [ "978-9945", "Dominican Republic", "4000000-5699999", 3 ],
+            [ "978-9945", "Dominican Republic", "5700000-5799999", 2 ],
+            [ "978-9945", "Dominican Republic", "5800000-7999999", 3 ],
+            [ "978-9945", "Dominican Republic", "8000000-8099999", 2 ],
+            [ "978-9945", "Dominican Republic", "8100000-8499999", 3 ],
+            [ "978-9945", "Dominican Republic", "8500000-9999999", 4 ],
+            [ "978-9946", "Korea, P.D.R.", "0000000-1999999", 1 ],
+            [ "978-9946", "Korea, P.D.R.", "2000000-3999999", 2 ],
+            [ "978-9946", "Korea, P.D.R.", "4000000-8999999", 3 ],
+            [ "978-9946", "Korea, P.D.R.", "9000000-9999999", 4 ],
+            [ "978-9947", "Algeria", "0000000-1999999", 1 ],
+            [ "978-9947", "Algeria", "2000000-7999999", 2 ],
+            [ "978-9947", "Algeria", "8000000-9999999", 3 ],
+            [ "978-9948", "United Arab Emirates", "0000000-3999999", 2 ],
+            [ "978-9948", "United Arab Emirates", "4000000-8499999", 3 ],
+            [ "978-9948", "United Arab Emirates", "8500000-9999999", 4 ],
+            [ "978-9949", "Estonia", "0000000-0899999", 2 ],
+            [ "978-9949", "Estonia", "0900000-0999999", 3 ],
+            [ "978-9949", "Estonia", "1000000-3999999", 2 ],
+            [ "978-9949", "Estonia", "4000000-6999999", 3 ],
+            [ "978-9949", "Estonia", "7000000-7199999", 2 ],
+            [ "978-9949", "Estonia", "7200000-7499999", 4 ],
+            [ "978-9949", "Estonia", "7500000-8999999", 2 ],
+            [ "978-9949", "Estonia", "9000000-9999999", 4 ],
+            [ "978-9950", "Palestine", "0000000-2999999", 2 ],
+            [ "978-9950", "Palestine", "3000000-8499999", 3 ],
+            [ "978-9950", "Palestine", "8500000-9999999", 4 ],
+            [ "978-9951", "Kosova", "0000000-3999999", 2 ],
+            [ "978-9951", "Kosova", "4000000-8499999", 3 ],
+            [ "978-9951", "Kosova", "8500000-9999999", 4 ],
+            [ "978-9952", "Azerbaijan", "0000000-1999999", 1 ],
+            [ "978-9952", "Azerbaijan", "2000000-3999999", 2 ],
+            [ "978-9952", "Azerbaijan", "4000000-7999999", 3 ],
+            [ "978-9952", "Azerbaijan", "8000000-9999999", 4 ],
+            [ "978-9953", "Lebanon", "0000000-0999999", 1 ],
+            [ "978-9953", "Lebanon", "1000000-3999999", 2 ],
+            [ "978-9953", "Lebanon", "4000000-5999999", 3 ],
+            [ "978-9953", "Lebanon", "6000000-8999999", 2 ],
+            [ "978-9953", "Lebanon", "9000000-9299999", 4 ],
+            [ "978-9953", "Lebanon", "9300000-9699999", 2 ],
+            [ "978-9953", "Lebanon", "9700000-9999999", 3 ],
+            [ "978-9954", "Morocco", "0000000-1999999", 1 ],
+            [ "978-9954", "Morocco", "2000000-3999999", 2 ],
+            [ "978-9954", "Morocco", "4000000-7999999", 3 ],
+            [ "978-9954", "Morocco", "8000000-9899999", 4 ],
+            [ "978-9954", "Morocco", "9900000-9999999", 2 ],
+            [ "978-9955", "Lithuania", "0000000-3999999", 2 ],
+            [ "978-9955", "Lithuania", "4000000-9299999", 3 ],
+            [ "978-9955", "Lithuania", "9300000-9999999", 4 ],
+            [ "978-9956", "Cameroon", "0000000-0999999", 1 ],
+            [ "978-9956", "Cameroon", "1000000-3999999", 2 ],
+            [ "978-9956", "Cameroon", "4000000-8999999", 3 ],
+            [ "978-9956", "Cameroon", "9000000-9999999", 4 ],
+            [ "978-9957", "Jordan", "0000000-3999999", 2 ],
+            [ "978-9957", "Jordan", "4000000-6499999", 3 ],
+            [ "978-9957", "Jordan", "6500000-6799999", 2 ],
+            [ "978-9957", "Jordan", "6800000-6999999", 3 ],
+            [ "978-9957", "Jordan", "7000000-8499999", 2 ],
+            [ "978-9957", "Jordan", "8500000-8799999", 4 ],
+            [ "978-9957", "Jordan", "8800000-9999999", 2 ],
+            [ "978-9958", "Bosnia and Herzegovina", "0000000-0199999", 2 ],
+            [ "978-9958", "Bosnia and Herzegovina", "0200000-0299999", 3 ],
+            [ "978-9958", "Bosnia and Herzegovina", "0300000-0399999", 4 ],
+            [ "978-9958", "Bosnia and Herzegovina", "0400000-0899999", 3 ],
+            [ "978-9958", "Bosnia and Herzegovina", "0900000-0999999", 4 ],
+            [ "978-9958", "Bosnia and Herzegovina", "1000000-1899999", 2 ],
+            [ "978-9958", "Bosnia and Herzegovina", "1900000-1999999", 4 ],
+            [ "978-9958", "Bosnia and Herzegovina", "2000000-4999999", 2 ],
+            [ "978-9958", "Bosnia and Herzegovina", "5000000-8999999", 3 ],
+            [ "978-9958", "Bosnia and Herzegovina", "9000000-9999999", 4 ],
+            [ "978-9959", "Libya", "0000000-1999999", 1 ],
+            [ "978-9959", "Libya", "2000000-7999999", 2 ],
+            [ "978-9959", "Libya", "8000000-9499999", 3 ],
+            [ "978-9959", "Libya", "9500000-9699999", 4 ],
+            [ "978-9959", "Libya", "9700000-9799999", 3 ],
+            [ "978-9959", "Libya", "9800000-9999999", 2 ],
+            [ "978-9960", "Saudi Arabia", "0000000-5999999", 2 ],
+            [ "978-9960", "Saudi Arabia", "6000000-8999999", 3 ],
+            [ "978-9960", "Saudi Arabia", "9000000-9999999", 4 ],
+            [ "978-9961", "Algeria", "0000000-2999999", 1 ],
+            [ "978-9961", "Algeria", "3000000-6999999", 2 ],
+            [ "978-9961", "Algeria", "7000000-9499999", 3 ],
+            [ "978-9961", "Algeria", "9500000-9999999", 4 ],
+            [ "978-9962", "Panama", "0000000-5499999", 2 ],
+            [ "978-9962", "Panama", "5500000-5599999", 4 ],
+            [ "978-9962", "Panama", "5600000-5999999", 2 ],
+            [ "978-9962", "Panama", "6000000-8499999", 3 ],
+            [ "978-9962", "Panama", "8500000-9999999", 4 ],
+            [ "978-9963", "Cyprus", "0000000-1999999", 1 ],
+            [ "978-9963", "Cyprus", "2000000-2499999", 4 ],
+            [ "978-9963", "Cyprus", "2500000-2799999", 3 ],
+            [ "978-9963", "Cyprus", "2800000-2999999", 4 ],
+            [ "978-9963", "Cyprus", "3000000-5499999", 2 ],
+            [ "978-9963", "Cyprus", "5500000-7349999", 3 ],
+            [ "978-9963", "Cyprus", "7350000-7499999", 4 ],
+            [ "978-9963", "Cyprus", "7500000-9999999", 4 ],
+            [ "978-9964", "Ghana", "0000000-6999999", 1 ],
+            [ "978-9964", "Ghana", "7000000-9499999", 2 ],
+            [ "978-9964", "Ghana", "9500000-9999999", 3 ],
+            [ "978-9965", "Kazakhstan", "0000000-3999999", 2 ],
+            [ "978-9965", "Kazakhstan", "4000000-8999999", 3 ],
+            [ "978-9965", "Kazakhstan", "9000000-9999999", 4 ],
+            [ "978-9966", "Kenya", "0000000-1399999", 3 ],
+            [ "978-9966", "Kenya", "1400000-1499999", 2 ],
+            [ "978-9966", "Kenya", "1500000-1999999", 4 ],
+            [ "978-9966", "Kenya", "2000000-6999999", 2 ],
+            [ "978-9966", "Kenya", "7000000-7499999", 4 ],
+            [ "978-9966", "Kenya", "7500000-8209999", 3 ],
+            [ "978-9966", "Kenya", "8210000-8249999", 4 ],
+            [ "978-9966", "Kenya", "8250000-8259999", 3 ],
+            [ "978-9966", "Kenya", "8260000-8289999", 4 ],
+            [ "978-9966", "Kenya", "8290000-9599999", 3 ],
+            [ "978-9966", "Kenya", "9600000-9999999", 4 ],
+            [ "978-9967", "Kyrgyz Republic", "0000000-3999999", 2 ],
+            [ "978-9967", "Kyrgyz Republic", "4000000-8999999", 3 ],
+            [ "978-9967", "Kyrgyz Republic", "9000000-9999999", 4 ],
+            [ "978-9968", "Costa Rica", "0000000-4999999", 2 ],
+            [ "978-9968", "Costa Rica", "5000000-9399999", 3 ],
+            [ "978-9968", "Costa Rica", "9400000-9999999", 4 ],
+            [ "978-9970", "Uganda", "0000000-3999999", 2 ],
+            [ "978-9970", "Uganda", "4000000-8999999", 3 ],
+            [ "978-9970", "Uganda", "9000000-9999999", 4 ],
+            [ "978-9971", "Singapore", "0000000-5999999", 1 ],
+            [ "978-9971", "Singapore", "6000000-8999999", 2 ],
+            [ "978-9971", "Singapore", "9000000-9899999", 3 ],
+            [ "978-9971", "Singapore", "9900000-9999999", 4 ],
+            [ "978-9972", "Peru", "0000000-0999999", 2 ],
+            [ "978-9972", "Peru", "1000000-1999999", 1 ],
+            [ "978-9972", "Peru", "2000000-2499999", 3 ],
+            [ "978-9972", "Peru", "2500000-2999999", 4 ],
+            [ "978-9972", "Peru", "3000000-5999999", 2 ],
+            [ "978-9972", "Peru", "6000000-8999999", 3 ],
+            [ "978-9972", "Peru", "9000000-9999999", 4 ],
+            [ "978-9973", "Tunisia", "0000000-0599999", 2 ],
+            [ "978-9973", "Tunisia", "0600000-0899999", 3 ],
+            [ "978-9973", "Tunisia", "0900000-0999999", 4 ],
+            [ "978-9973", "Tunisia", "1000000-6999999", 2 ],
+            [ "978-9973", "Tunisia", "7000000-9699999", 3 ],
+            [ "978-9973", "Tunisia", "9700000-9999999", 4 ],
+            [ "978-9974", "Uruguay", "0000000-2999999", 1 ],
+            [ "978-9974", "Uruguay", "3000000-5499999", 2 ],
+            [ "978-9974", "Uruguay", "5500000-7499999", 3 ],
+            [ "978-9974", "Uruguay", "7500000-8799999", 4 ],
+            [ "978-9974", "Uruguay", "8800000-9099999", 3 ],
+            [ "978-9974", "Uruguay", "9100000-9499999", 2 ],
+            [ "978-9974", "Uruguay", "9500000-9999999", 2 ],
+            [ "978-9975", "Moldova", "0000000-0999999", 1 ],
+            [ "978-9975", "Moldova", "1000000-2999999", 3 ],
+            [ "978-9975", "Moldova", "3000000-3999999", 4 ],
+            [ "978-9975", "Moldova", "4000000-4499999", 4 ],
+            [ "978-9975", "Moldova", "4500000-8999999", 2 ],
+            [ "978-9975", "Moldova", "9000000-9499999", 3 ],
+            [ "978-9975", "Moldova", "9500000-9999999", 4 ],
+            [ "978-9976", "Tanzania", "0000000-4999999", 1 ],
+            [ "978-9976", "Tanzania", "5000000-5799999", 4 ],
+            [ "978-9976", "Tanzania", "5800000-5899999", 3 ],
+            [ "978-9976", "Tanzania", "5900000-8999999", 2 ],
+            [ "978-9976", "Tanzania", "9000000-9899999", 3 ],
+            [ "978-9976", "Tanzania", "9900000-9999999", 4 ],
+            [ "978-9977", "Costa Rica", "0000000-8999999", 2 ],
+            [ "978-9977", "Costa Rica", "9000000-9899999", 3 ],
+            [ "978-9977", "Costa Rica", "9900000-9999999", 4 ],
+            [ "978-9978", "Ecuador", "0000000-2999999", 2 ],
+            [ "978-9978", "Ecuador", "3000000-3999999", 3 ],
+            [ "978-9978", "Ecuador", "4000000-9499999", 2 ],
+            [ "978-9978", "Ecuador", "9500000-9899999", 3 ],
+            [ "978-9978", "Ecuador", "9900000-9999999", 4 ],
+            [ "978-9979", "Iceland", "0000000-4999999", 1 ],
+            [ "978-9979", "Iceland", "5000000-6499999", 2 ],
+            [ "978-9979", "Iceland", "6500000-6599999", 3 ],
+            [ "978-9979", "Iceland", "6600000-7599999", 2 ],
+            [ "978-9979", "Iceland", "7600000-8999999", 3 ],
+            [ "978-9979", "Iceland", "9000000-9999999", 4 ],
+            [ "978-9980", "Papua New Guinea", "0000000-3999999", 1 ],
+            [ "978-9980", "Papua New Guinea", "4000000-8999999", 2 ],
+            [ "978-9980", "Papua New Guinea", "9000000-9899999", 3 ],
+            [ "978-9980", "Papua New Guinea", "9900000-9999999", 4 ],
+            [ "978-9981", "Morocco", "0000000-0999999", 2 ],
+            [ "978-9981", "Morocco", "1000000-1599999", 3 ],
+            [ "978-9981", "Morocco", "1600000-1999999", 4 ],
+            [ "978-9981", "Morocco", "2000000-7999999", 2 ],
+            [ "978-9981", "Morocco", "8000000-9499999", 3 ],
+            [ "978-9981", "Morocco", "9500000-9999999", 4 ],
+            [ "978-9982", "ia", "0000000-7999999", 2 ],
+            [ "978-9982", "ia", "8000000-9899999", 3 ],
+            [ "978-9982", "ia", "9900000-9999999", 4 ],
+            [ "978-9983", "Gambia", "0000000-7999999", 0 ],
+            [ "978-9983", "Gambia", "8000000-9499999", 2 ],
+            [ "978-9983", "Gambia", "9500000-9899999", 3 ],
+            [ "978-9983", "Gambia", "9900000-9999999", 4 ],
+            [ "978-9984", "Latvia", "0000000-4999999", 2 ],
+            [ "978-9984", "Latvia", "5000000-8999999", 3 ],
+            [ "978-9984", "Latvia", "9000000-9999999", 4 ],
+            [ "978-9985", "Estonia", "0000000-4999999", 1 ],
+            [ "978-9985", "Estonia", "5000000-7999999", 2 ],
+            [ "978-9985", "Estonia", "8000000-8999999", 3 ],
+            [ "978-9985", "Estonia", "9000000-9999999", 4 ],
+            [ "978-9986", "Lithuania", "0000000-3999999", 2 ],
+            [ "978-9986", "Lithuania", "4000000-8999999", 3 ],
+            [ "978-9986", "Lithuania", "9000000-9399999", 4 ],
+            [ "978-9986", "Lithuania", "9400000-9699999", 3 ],
+            [ "978-9986", "Lithuania", "9700000-9999999", 2 ],
+            [ "978-9987", "Tanzania", "0000000-3999999", 2 ],
+            [ "978-9987", "Tanzania", "4000000-8799999", 3 ],
+            [ "978-9987", "Tanzania", "8800000-9999999", 4 ],
+            [ "978-9988", "Ghana", "0000000-3999999", 1 ],
+            [ "978-9988", "Ghana", "4000000-5499999", 2 ],
+            [ "978-9988", "Ghana", "5500000-7499999", 3 ],
+            [ "978-9988", "Ghana", "7500000-9999999", 4 ],
+            [ "978-9989", "North Macedonia", "0000000-0999999", 1 ],
+            [ "978-9989", "North Macedonia", "1000000-1999999", 3 ],
+            [ "978-9989", "North Macedonia", "2000000-2999999", 4 ],
+            [ "978-9989", "North Macedonia", "3000000-5999999", 2 ],
+            [ "978-9989", "North Macedonia", "6000000-9499999", 3 ],
+            [ "978-9989", "North Macedonia", "9500000-9999999", 4 ],
+            [ "978-99901", "Bahrain", "0000000-4999999", 2 ],
+            [ "978-99901", "Bahrain", "5000000-7999999", 3 ],
+            [ "978-99901", "Bahrain", "8000000-9999999", 2 ],
+            [ "978-99902", "Reserved Agency", "0000000-9999999", 0 ],
+            [ "978-99903", "Mauritius", "0000000-1999999", 1 ],
+            [ "978-99903", "Mauritius", "2000000-8999999", 2 ],
+            [ "978-99903", "Mauritius", "9000000-9999999", 3 ],
+            [ "978-99904", "Curaçao", "0000000-5999999", 1 ],
+            [ "978-99904", "Curaçao", "6000000-8999999", 2 ],
+            [ "978-99904", "Curaçao", "9000000-9999999", 3 ],
+            [ "978-99905", "Bolivia", "0000000-3999999", 1 ],
+            [ "978-99905", "Bolivia", "4000000-7999999", 2 ],
+            [ "978-99905", "Bolivia", "8000000-9999999", 3 ],
+            [ "978-99906", "Kuwait", "0000000-2999999", 1 ],
+            [ "978-99906", "Kuwait", "3000000-5999999", 2 ],
+            [ "978-99906", "Kuwait", "6000000-6999999", 3 ],
+            [ "978-99906", "Kuwait", "7000000-8999999", 2 ],
+            [ "978-99906", "Kuwait", "9000000-9499999", 2 ],
+            [ "978-99906", "Kuwait", "9500000-9999999", 3 ],
+            [ "978-99908", "Malawi", "0000000-0999999", 1 ],
+            [ "978-99908", "Malawi", "1000000-8999999", 2 ],
+            [ "978-99908", "Malawi", "9000000-9999999", 3 ],
+            [ "978-99909", "Malta", "0000000-3999999", 1 ],
+            [ "978-99909", "Malta", "4000000-9499999", 2 ],
+            [ "978-99909", "Malta", "9500000-9999999", 3 ],
+            [ "978-99910", "Sierra Leone", "0000000-2999999", 1 ],
+            [ "978-99910", "Sierra Leone", "3000000-8999999", 2 ],
+            [ "978-99910", "Sierra Leone", "9000000-9999999", 3 ],
+            [ "978-99911", "Lesotho", "0000000-5999999", 2 ],
+            [ "978-99911", "Lesotho", "6000000-9999999", 3 ],
+            [ "978-99912", "Botswana", "0000000-3999999", 1 ],
+            [ "978-99912", "Botswana", "4000000-5999999", 3 ],
+            [ "978-99912", "Botswana", "6000000-8999999", 2 ],
+            [ "978-99912", "Botswana", "9000000-9999999", 3 ],
+            [ "978-99913", "Andorra", "0000000-2999999", 1 ],
+            [ "978-99913", "Andorra", "3000000-3599999", 2 ],
+            [ "978-99913", "Andorra", "3600000-5999999", 0 ],
+            [ "978-99913", "Andorra", "6000000-6049999", 3 ],
+            [ "978-99913", "Andorra", "6050000-9999999", 0 ],
+            [ "978-99914", "International NGO Publishers", "0000000-4999999", 1 ],
+            [ "978-99914", "International NGO Publishers", "5000000-6999999", 2 ],
+            [ "978-99914", "International NGO Publishers", "7000000-7999999", 1 ],
+            [ "978-99914", "International NGO Publishers", "8000000-8999999", 2 ],
+            [ "978-99914", "International NGO Publishers", "9000000-9999999", 3 ],
+            [ "978-99915", "Maldives", "0000000-4999999", 1 ],
+            [ "978-99915", "Maldives", "5000000-7999999", 2 ],
+            [ "978-99915", "Maldives", "8000000-9999999", 3 ],
+            [ "978-99916", "Namibia", "0000000-2999999", 1 ],
+            [ "978-99916", "Namibia", "3000000-6999999", 2 ],
+            [ "978-99916", "Namibia", "7000000-9999999", 3 ],
+            [ "978-99917", "Brunei Darussalam", "0000000-2999999", 1 ],
+            [ "978-99917", "Brunei Darussalam", "3000000-8899999", 2 ],
+            [ "978-99917", "Brunei Darussalam", "8900000-9999999", 3 ],
+            [ "978-99918", "Faroe Islands", "0000000-3999999", 1 ],
+            [ "978-99918", "Faroe Islands", "4000000-7999999", 2 ],
+            [ "978-99918", "Faroe Islands", "8000000-9999999", 3 ],
+            [ "978-99919", "Benin", "0000000-2999999", 1 ],
+            [ "978-99919", "Benin", "3000000-3999999", 3 ],
+            [ "978-99919", "Benin", "4000000-7999999", 2 ],
+            [ "978-99919", "Benin", "8000000-9999999", 3 ],
+            [ "978-99920", "Andorra", "0000000-4999999", 1 ],
+            [ "978-99920", "Andorra", "5000000-8999999", 2 ],
+            [ "978-99920", "Andorra", "9000000-9999999", 3 ],
+            [ "978-99921", "Qatar", "0000000-1999999", 1 ],
+            [ "978-99921", "Qatar", "2000000-6999999", 2 ],
+            [ "978-99921", "Qatar", "7000000-7999999", 3 ],
+            [ "978-99921", "Qatar", "8000000-8999999", 1 ],
+            [ "978-99921", "Qatar", "9000000-9999999", 2 ],
+            [ "978-99922", "Guatemala", "0000000-3999999", 1 ],
+            [ "978-99922", "Guatemala", "4000000-6999999", 2 ],
+            [ "978-99922", "Guatemala", "7000000-9999999", 3 ],
+            [ "978-99923", "El Salvador", "0000000-1999999", 1 ],
+            [ "978-99923", "El Salvador", "2000000-7999999", 2 ],
+            [ "978-99923", "El Salvador", "8000000-9999999", 3 ],
+            [ "978-99924", "Nicaragua", "0000000-1999999", 1 ],
+            [ "978-99924", "Nicaragua", "2000000-7999999", 2 ],
+            [ "978-99924", "Nicaragua", "8000000-9999999", 3 ],
+            [ "978-99925", "Paraguay", "0000000-0999999", 1 ],
+            [ "978-99925", "Paraguay", "1000000-1999999", 2 ],
+            [ "978-99925", "Paraguay", "2000000-2999999", 3 ],
+            [ "978-99925", "Paraguay", "3000000-3999999", 1 ],
+            [ "978-99925", "Paraguay", "4000000-7999999", 2 ],
+            [ "978-99925", "Paraguay", "8000000-9999999", 3 ],
+            [ "978-99926", "Honduras", "0000000-0999999", 1 ],
+            [ "978-99926", "Honduras", "1000000-5999999", 2 ],
+            [ "978-99926", "Honduras", "6000000-8699999", 3 ],
+            [ "978-99926", "Honduras", "8700000-8999999", 2 ],
+            [ "978-99926", "Honduras", "9000000-9999999", 2 ],
+            [ "978-99927", "Albania", "0000000-2999999", 1 ],
+            [ "978-99927", "Albania", "3000000-5999999", 2 ],
+            [ "978-99927", "Albania", "6000000-9999999", 3 ],
+            [ "978-99928", "Georgia", "0000000-0999999", 1 ],
+            [ "978-99928", "Georgia", "1000000-7999999", 2 ],
+            [ "978-99928", "Georgia", "8000000-9999999", 3 ],
+            [ "978-99929", "Mongolia", "0000000-4999999", 1 ],
+            [ "978-99929", "Mongolia", "5000000-7999999", 2 ],
+            [ "978-99929", "Mongolia", "8000000-9999999", 3 ],
+            [ "978-99930", "Armenia", "0000000-4999999", 1 ],
+            [ "978-99930", "Armenia", "5000000-7999999", 2 ],
+            [ "978-99930", "Armenia", "8000000-9999999", 3 ],
+            [ "978-99931", "Seychelles", "0000000-4999999", 1 ],
+            [ "978-99931", "Seychelles", "5000000-7999999", 2 ],
+            [ "978-99931", "Seychelles", "8000000-9999999", 3 ],
+            [ "978-99932", "Malta", "0000000-0999999", 1 ],
+            [ "978-99932", "Malta", "1000000-5999999", 2 ],
+            [ "978-99932", "Malta", "6000000-6999999", 3 ],
+            [ "978-99932", "Malta", "7000000-7999999", 1 ],
+            [ "978-99932", "Malta", "8000000-9999999", 2 ],
+            [ "978-99933", "Nepal", "0000000-2999999", 1 ],
+            [ "978-99933", "Nepal", "3000000-5999999", 2 ],
+            [ "978-99933", "Nepal", "6000000-9999999", 3 ],
+            [ "978-99934", "Dominican Republic", "0000000-1999999", 1 ],
+            [ "978-99934", "Dominican Republic", "2000000-7999999", 2 ],
+            [ "978-99934", "Dominican Republic", "8000000-9999999", 3 ],
+            [ "978-99935", "Haiti", "0000000-2999999", 1 ],
+            [ "978-99935", "Haiti", "3000000-5999999", 2 ],
+            [ "978-99935", "Haiti", "6000000-6999999", 3 ],
+            [ "978-99935", "Haiti", "7000000-8999999", 1 ],
+            [ "978-99935", "Haiti", "9000000-9999999", 2 ],
+            [ "978-99936", "Bhutan", "0000000-0999999", 1 ],
+            [ "978-99936", "Bhutan", "1000000-5999999", 2 ],
+            [ "978-99936", "Bhutan", "6000000-9999999", 3 ],
+            [ "978-99937", "Macau", "0000000-1999999", 1 ],
+            [ "978-99937", "Macau", "2000000-5999999", 2 ],
+            [ "978-99937", "Macau", "6000000-9999999", 3 ],
+            [ "978-99938", "Srpska, Republic of", "0000000-1999999", 1 ],
+            [ "978-99938", "Srpska, Republic of", "2000000-5999999", 2 ],
+            [ "978-99938", "Srpska, Republic of", "6000000-8999999", 3 ],
+            [ "978-99938", "Srpska, Republic of", "9000000-9999999", 2 ],
+            [ "978-99939", "Guatemala", "0000000-2999999", 1 ],
+            [ "978-99939", "Guatemala", "3000000-5999999", 2 ],
+            [ "978-99939", "Guatemala", "6000000-8999999", 2 ],
+            [ "978-99939", "Guatemala", "9000000-9999999", 3 ],
+            [ "978-99940", "Georgia", "0000000-0999999", 1 ],
+            [ "978-99940", "Georgia", "1000000-6999999", 2 ],
+            [ "978-99940", "Georgia", "7000000-9999999", 3 ],
+            [ "978-99941", "Armenia", "0000000-2999999", 1 ],
+            [ "978-99941", "Armenia", "3000000-7999999", 2 ],
+            [ "978-99941", "Armenia", "8000000-9999999", 3 ],
+            [ "978-99942", "Sudan", "0000000-4999999", 1 ],
+            [ "978-99942", "Sudan", "5000000-7999999", 2 ],
+            [ "978-99942", "Sudan", "8000000-9999999", 3 ],
+            [ "978-99943", "Albania", "0000000-2999999", 1 ],
+            [ "978-99943", "Albania", "3000000-5999999", 2 ],
+            [ "978-99943", "Albania", "6000000-9999999", 3 ],
+            [ "978-99944", "Ethiopia", "0000000-4999999", 1 ],
+            [ "978-99944", "Ethiopia", "5000000-7999999", 2 ],
+            [ "978-99944", "Ethiopia", "8000000-9999999", 3 ],
+            [ "978-99945", "Namibia", "0000000-4999999", 1 ],
+            [ "978-99945", "Namibia", "5000000-8999999", 2 ],
+            [ "978-99945", "Namibia", "9000000-9999999", 3 ],
+            [ "978-99946", "Nepal", "0000000-2999999", 1 ],
+            [ "978-99946", "Nepal", "3000000-5999999", 2 ],
+            [ "978-99946", "Nepal", "6000000-9999999", 3 ],
+            [ "978-99947", "Tajikistan", "0000000-2999999", 1 ],
+            [ "978-99947", "Tajikistan", "3000000-6999999", 2 ],
+            [ "978-99947", "Tajikistan", "7000000-9999999", 3 ],
+            [ "978-99948", "Eritrea", "0000000-4999999", 1 ],
+            [ "978-99948", "Eritrea", "5000000-7999999", 2 ],
+            [ "978-99948", "Eritrea", "8000000-9999999", 3 ],
+            [ "978-99949", "Mauritius", "0000000-1999999", 1 ],
+            [ "978-99949", "Mauritius", "2000000-8999999", 2 ],
+            [ "978-99949", "Mauritius", "9000000-9999999", 3 ],
+            [ "978-99950", "Cambodia", "0000000-4999999", 1 ],
+            [ "978-99950", "Cambodia", "5000000-7999999", 2 ],
+            [ "978-99950", "Cambodia", "8000000-9999999", 3 ],
+            [ "978-99951", "Reserved Agency", "0000000-9999999", 0 ],
+            [ "978-99952", "Mali", "0000000-4999999", 1 ],
+            [ "978-99952", "Mali", "5000000-7999999", 2 ],
+            [ "978-99952", "Mali", "8000000-9999999", 3 ],
+            [ "978-99953", "Paraguay", "0000000-2999999", 1 ],
+            [ "978-99953", "Paraguay", "3000000-7999999", 2 ],
+            [ "978-99953", "Paraguay", "8000000-9399999", 3 ],
+            [ "978-99953", "Paraguay", "9400000-9999999", 2 ],
+            [ "978-99954", "Bolivia", "0000000-2999999", 1 ],
+            [ "978-99954", "Bolivia", "3000000-6999999", 2 ],
+            [ "978-99954", "Bolivia", "7000000-8799999", 3 ],
+            [ "978-99954", "Bolivia", "8800000-9999999", 2 ],
+            [ "978-99955", "Srpska, Republic of", "0000000-1999999", 1 ],
+            [ "978-99955", "Srpska, Republic of", "2000000-5999999", 2 ],
+            [ "978-99955", "Srpska, Republic of", "6000000-7999999", 3 ],
+            [ "978-99955", "Srpska, Republic of", "8000000-9999999", 2 ],
+            [ "978-99956", "Albania", "0000000-5999999", 2 ],
+            [ "978-99956", "Albania", "6000000-8599999", 3 ],
+            [ "978-99956", "Albania", "8600000-9999999", 2 ],
+            [ "978-99957", "Malta", "0000000-1999999", 1 ],
+            [ "978-99957", "Malta", "2000000-7999999", 2 ],
+            [ "978-99957", "Malta", "8000000-9499999", 3 ],
+            [ "978-99957", "Malta", "9500000-9999999", 2 ],
+            [ "978-99958", "Bahrain", "0000000-4999999", 1 ],
+            [ "978-99958", "Bahrain", "5000000-9399999", 2 ],
+            [ "978-99958", "Bahrain", "9400000-9499999", 3 ],
+            [ "978-99958", "Bahrain", "9500000-9999999", 3 ],
+            [ "978-99959", "Luxembourg", "0000000-2999999", 1 ],
+            [ "978-99959", "Luxembourg", "3000000-5999999", 2 ],
+            [ "978-99959", "Luxembourg", "6000000-9999999", 3 ],
+            [ "978-99960", "Malawi", "0000000-0699999", 0 ],
+            [ "978-99960", "Malawi", "0700000-0999999", 3 ],
+            [ "978-99960", "Malawi", "1000000-9499999", 2 ],
+            [ "978-99960", "Malawi", "9500000-9999999", 3 ],
+            [ "978-99961", "El Salvador", "0000000-2999999", 1 ],
+            [ "978-99961", "El Salvador", "3000000-3699999", 3 ],
+            [ "978-99961", "El Salvador", "3700000-8999999", 2 ],
+            [ "978-99961", "El Salvador", "9000000-9999999", 3 ],
+            [ "978-99962", "Mongolia", "0000000-4999999", 1 ],
+            [ "978-99962", "Mongolia", "5000000-7999999", 2 ],
+            [ "978-99962", "Mongolia", "8000000-9999999", 3 ],
+            [ "978-99963", "Cambodia", "0000000-4999999", 2 ],
+            [ "978-99963", "Cambodia", "5000000-9199999", 3 ],
+            [ "978-99963", "Cambodia", "9200000-9999999", 2 ],
+            [ "978-99964", "Nicaragua", "0000000-1999999", 1 ],
+            [ "978-99964", "Nicaragua", "2000000-7999999", 2 ],
+            [ "978-99964", "Nicaragua", "8000000-9999999", 3 ],
+            [ "978-99965", "Macau", "0000000-2999999", 1 ],
+            [ "978-99965", "Macau", "3000000-3599999", 3 ],
+            [ "978-99965", "Macau", "3600000-6299999", 2 ],
+            [ "978-99965", "Macau", "6300000-9999999", 3 ],
+            [ "978-99966", "Kuwait", "0000000-2999999", 1 ],
+            [ "978-99966", "Kuwait", "3000000-6999999", 2 ],
+            [ "978-99966", "Kuwait", "7000000-7999999", 3 ],
+            [ "978-99966", "Kuwait", "8000000-9699999", 2 ],
+            [ "978-99966", "Kuwait", "9700000-9999999", 3 ],
+            [ "978-99967", "Paraguay", "0000000-0999999", 1 ],
+            [ "978-99967", "Paraguay", "1000000-5999999", 2 ],
+            [ "978-99967", "Paraguay", "6000000-9999999", 3 ],
+            [ "978-99968", "Botswana", "0000000-3999999", 1 ],
+            [ "978-99968", "Botswana", "4000000-5999999", 3 ],
+            [ "978-99968", "Botswana", "6000000-8999999", 2 ],
+            [ "978-99968", "Botswana", "9000000-9999999", 3 ],
+            [ "978-99969", "Oman", "0000000-4999999", 1 ],
+            [ "978-99969", "Oman", "5000000-7999999", 2 ],
+            [ "978-99969", "Oman", "8000000-9999999", 3 ],
+            [ "978-99970", "Haiti", "0000000-4999999", 1 ],
+            [ "978-99970", "Haiti", "5000000-8999999", 2 ],
+            [ "978-99970", "Haiti", "9000000-9999999", 3 ],
+            [ "978-99971", "Myanmar", "0000000-3999999", 1 ],
+            [ "978-99971", "Myanmar", "4000000-8499999", 2 ],
+            [ "978-99971", "Myanmar", "8500000-9999999", 3 ],
+            [ "978-99972", "Faroe Islands", "0000000-4999999", 1 ],
+            [ "978-99972", "Faroe Islands", "5000000-8999999", 2 ],
+            [ "978-99972", "Faroe Islands", "9000000-9999999", 3 ],
+            [ "978-99973", "Mongolia", "0000000-3999999", 1 ],
+            [ "978-99973", "Mongolia", "4000000-7999999", 2 ],
+            [ "978-99973", "Mongolia", "8000000-9999999", 3 ],
+            [ "978-99974", "Bolivia", "0000000-0999999", 1 ],
+            [ "978-99974", "Bolivia", "1000000-2599999", 2 ],
+            [ "978-99974", "Bolivia", "2600000-3999999", 3 ],
+            [ "978-99974", "Bolivia", "4000000-6399999", 2 ],
+            [ "978-99974", "Bolivia", "6400000-6499999", 3 ],
+            [ "978-99974", "Bolivia", "6500000-7999999", 2 ],
+            [ "978-99974", "Bolivia", "8000000-9999999", 3 ],
+            [ "978-99975", "Tajikistan", "0000000-2999999", 1 ],
+            [ "978-99975", "Tajikistan", "3000000-3999999", 3 ],
+            [ "978-99975", "Tajikistan", "4000000-7999999", 2 ],
+            [ "978-99975", "Tajikistan", "8000000-9999999", 3 ],
+            [ "978-99976", "Srpska, Republic of", "0000000-1999999", 1 ],
+            [ "978-99976", "Srpska, Republic of", "2000000-5999999", 2 ],
+            [ "978-99976", "Srpska, Republic of", "6000000-7999999", 3 ],
+            [ "978-99976", "Srpska, Republic of", "8000000-8999999", 0 ],
+            [ "978-99976", "Srpska, Republic of", "9000000-9999999", 3 ],
+            [ "978-99977", "Rwanda", "0000000-1999999", 1 ],
+            [ "978-99977", "Rwanda", "2000000-3999999", 0 ],
+            [ "978-99977", "Rwanda", "4000000-6999999", 2 ],
+            [ "978-99977", "Rwanda", "7000000-7999999", 3 ],
+            [ "978-99977", "Rwanda", "8000000-9949999", 0 ],
+            [ "978-99977", "Rwanda", "9950000-9999999", 3 ],
+            [ "978-99978", "Mongolia", "0000000-4999999", 1 ],
+            [ "978-99978", "Mongolia", "5000000-6999999", 2 ],
+            [ "978-99978", "Mongolia", "7000000-9999999", 3 ],
+            [ "978-99979", "Honduras", "0000000-4999999", 1 ],
+            [ "978-99979", "Honduras", "5000000-7999999", 2 ],
+            [ "978-99979", "Honduras", "8000000-9999999", 3 ],
+            [ "978-99980", "Bhutan", "0000000-0999999", 1 ],
+            [ "978-99980", "Bhutan", "1000000-2999999", 0 ],
+            [ "978-99980", "Bhutan", "3000000-5999999", 2 ],
+            [ "978-99980", "Bhutan", "6000000-7499999", 0 ],
+            [ "978-99980", "Bhutan", "7500000-9999999", 3 ],
+            [ "978-99981", "Macau", "0000000-1999999", 1 ],
+            [ "978-99981", "Macau", "2000000-2999999", 0 ],
+            [ "978-99981", "Macau", "3000000-7499999", 2 ],
+            [ "978-99981", "Macau", "7500000-7999999", 0 ],
+            [ "978-99981", "Macau", "8000000-9999999", 3 ],
+            [ "978-99982", "Benin", "0000000-0999999", 1 ],
+            [ "978-99982", "Benin", "1000000-4999999", 0 ],
+            [ "978-99982", "Benin", "5000000-6599999", 2 ],
+            [ "978-99982", "Benin", "6600000-8999999", 0 ],
+            [ "978-99982", "Benin", "9000000-9799999", 3 ],
+            [ "978-99982", "Benin", "9800000-9999999", 0 ],
+            [ "978-99983", "El Salvador", "0000000-0999999", 1 ],
+            [ "978-99983", "El Salvador", "1000000-4999999", 0 ],
+            [ "978-99983", "El Salvador", "5000000-6999999", 2 ],
+            [ "978-99983", "El Salvador", "7000000-9499999", 0 ],
+            [ "978-99983", "El Salvador", "9500000-9999999", 3 ],
+            [ "978-99985", "Tajikistan", "0000000-1999999", 1 ],
+            [ "978-99985", "Tajikistan", "2000000-4999999", 0 ],
+            [ "978-99985", "Tajikistan", "5000000-7999999", 2 ],
+            [ "978-99985", "Tajikistan", "8000000-8999999", 0 ],
+            [ "978-99985", "Tajikistan", "9000000-9999999", 3 ],
+            [ "978-99986", "Myanmar", "0000000-0999999", 1 ],
+            [ "978-99986", "Myanmar", "1000000-4999999", 0 ],
+            [ "978-99986", "Myanmar", "5000000-6999999", 2 ],
+            [ "978-99986", "Myanmar", "7000000-9499999", 0 ],
+            [ "978-99986", "Myanmar", "9500000-9999999", 3 ],
+            [ "978-99987", "Luxembourg", "0000000-8499999", 0 ],
+            [ "978-99987", "Luxembourg", "8500000-9999999", 3 ],
+            [ "978-99988", "Sudan", "0000000-0999999", 1 ],
+            [ "978-99988", "Sudan", "1000000-4999999", 0 ],
+            [ "978-99988", "Sudan", "5000000-5499999", 2 ],
+            [ "978-99988", "Sudan", "5500000-7999999", 0 ],
+            [ "978-99988", "Sudan", "8000000-8249999", 3 ],
+            [ "978-99988", "Sudan", "8250000-9999999", 0 ],
+            [ "979-10", "France", "0000000-1999999", 2 ],
+            [ "979-10", "France", "2000000-6999999", 3 ],
+            [ "979-10", "France", "7000000-8999999", 4 ],
+            [ "979-10", "France", "9000000-9759999", 5 ],
+            [ "979-10", "France", "9760000-9999999", 6 ],
+            [ "979-11", "Korea, Republic", "0000000-2499999", 2 ],
+            [ "979-11", "Korea, Republic", "2500000-5499999", 3 ],
+            [ "979-11", "Korea, Republic", "5500000-8499999", 4 ],
+            [ "979-11", "Korea, Republic", "8500000-9499999", 5 ],
+            [ "979-11", "Korea, Republic", "9500000-9999999", 6 ],
+            [ "979-12", "Italy", "0000000-1999999", 0 ],
+            [ "979-12", "Italy", "2000000-2999999", 3 ],
+            [ "979-12", "Italy", "3000000-5449999", 0 ],
+            [ "979-12", "Italy", "5450000-5999999", 4 ],
+            [ "979-12", "Italy", "6000000-7999999", 0 ],
+            [ "979-12", "Italy", "8000000-8499999", 5 ],
+            [ "979-12", "Italy", "8500000-9999999", 0 ],
+            [ "979-8", "United States", "0000000-1999999", 0 ],
+            [ "979-8", "United States", "2000000-2199999", 3 ],
+            [ "979-8", "United States", "2200000-4499999", 0 ],
+            [ "979-8", "United States", "4500000-7999999", 4 ],
+            [ "979-8", "United States", "8000000-8849999", 0 ],
+            [ "979-8", "United States", "8850000-8999999", 5 ],
+            [ "979-8", "United States", "9000000-9849999", 0 ],
+            [ "979-8", "United States", "9850000-9869999", 7 ],
+            [ "979-8", "United States", "9870000-9999999", 0 ],
+        );
+
+        $ISBN_database_date = "Wed, 27 Oct 2021 15:42:34 BST";
+        # End include from ./isbn_range.pl
+    }

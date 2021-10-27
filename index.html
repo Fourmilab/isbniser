@@ -1,0 +1,414 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1" />
+<title>ISBNiser</title>
+<link rel="stylesheet" href="https://www.fourmilab.ch/documents/styles/standard_screen.css"
+    type="text/css" />
+<style type="text/css">
+
+    blockquote.rights {
+        text-align: justify;
+        font-size: smaller;
+        font-family: sans-serif;
+    }
+
+    h1.title {
+        margin-bottom: 0px;
+        text-align: center;
+    }
+
+    div.options {
+        margin-left: 10%;
+        margin-right: 10%;
+    }
+
+    dl.options :first-child {
+        margin-top: 0px;
+    }
+
+    dl.options dt {
+        font-weight: bold;
+        margin-top: 1ex;
+        padding-bottom: 0px;
+    }
+
+    img.border0 {
+        border: 0px;
+    }
+
+    p,dd, li, blockquote, td {
+        text-align: justify;
+    }
+
+    p.byline {
+        margin-top: 0px;
+        text-align: center;
+    }
+
+    table.footer {
+        width: 100%;
+    }
+
+    table.footer td.left {
+        width: 50%;
+        text-align: left;
+        font-style: italic;
+        vertical-align: top;
+    }
+
+    table.footer td.right {
+        width: 50%;
+        text-align: right;
+        vertical-align: top;
+    }
+
+    table.footer table.buttons {
+        margin-left: auto;
+    }
+
+    table.footer table.buttons td {
+        text-align: center;
+    }
+</style>
+
+<meta name="keywords" content="ISBNiser, ISBN, Amazon, associates, perl, fourmilab" />
+<meta name="description" content="ISBNiser" />
+<meta name="author" content="John Walker" />
+<meta name="robots" content="index" />
+<script type="text/javascript" src="https://www.fourmilab.ch/documents/scripts/externalLinks.js">
+</script>
+</head>
+
+<body class="standard" onload="externalLinks();">
+
+<h1 class="title">ISBNiser</h1>
+<p class="byline">by <a href="/">John Walker</a></p>
+
+<p />
+<hr />
+<p />
+
+<p>
+International Standard Book Numbers
+(<a href="https://en.wikipedia.org/wiki/International_Standard_Book_Number"
+    rel="Target:ISBNiser_Aux">ISBN</a>s) are unique numbers which
+identify published books.  Each edition of a book (for example,
+hardcover, paperback, and electronic) has its own ISBN, so a bookstore
+can order the book based on the ISBN and be assured of receiving
+the desired edition.  ISBNs are integral to the operation of on-line
+book vendors and distributors of electronic editions of books.
+</p>
+
+<p>
+The ISBN standard was adopted in 1970 by the International Organisation
+for Standardisation (ISO) as ISO&nbsp;2108.  Initially, ISBNs were
+10 character codes, with the first digits indicating the so-called
+&ldquo;registration group&rdquo;, which generally identifies the language
+of the publication.  In 2007, ISBNs were extended to a 13-digit code
+compatible with the
+<a href="https://en.wikipedia.org/wiki/International_Article_Number"
+    rel="Target:ISBNiser_Aux">European Article Number</a> (EAN) system of product
+identification, with a Unique Country Code (UCC) of 978 denoting
+&ldquo;Bookland&rdquo;, with 979 reserved for expansion of that
+address space as necessary.  With the change to 13-digit codes,
+the original ISBNs were redesignated ISBN-10, and the new ones
+ISBN-13. Any ISBN-10 can be converted to an ISBN-13 with a UCC
+of 978, and any ISBN-13 in UCC 978 can be converted to an
+ISBN-10.  ISBNs with a UCC of 979 cannot, however, be converted
+back to ISBN-10.  Most books published prior to 2019 have UCC 978,
+but over the years 979 has become more common, especially in books
+from newly-established small presses.
+</p>
+
+<p>
+The ISBN-10 and ISBN-13 systems are very different.  Both incorporate
+a check digit to guard against errors in manual transcription or
+machine scanning, but they use different algorithms.  In ISBN-10, the
+check digit can range from 0 to 10, with the last character of the
+code using the letter &ldquo;<tt>X</tt>&rdquo; to denote a
+check digit with value 10.  ISBN-13 uses the EAN checksum algorithm, which
+yields check digits from 0 through 9, and hence are all numeric.  Both
+ISBN-10 and ISBN-13 can include non-alphanumeric delimiters, which
+often separate the prefix (for ISBN-13), registration group element,
+registrant, publication, and checksum, for example
+&ldquo;<tt>978-0-471-64877-2</tt>&rdquo;.  These delimiters are
+of no significance in interpreting the number: a specification
+of &ldquo;<tt>978.0.471.64877.2</tt>&rdquo; or
+&ldquo;<tt>9780471648772</tt>&rdquo; is completely
+equivalent.  Traditionally, the larger publishers always
+delimited their registrant number to show how big they were (a two
+or three digit number is prestigious), but increasingly now, you see
+ISBN-13s with no delimiters: just thirteen digits.  (And, since
+you didn't ask, Fourmilab's ISBN-13 block is
+&ldquo;<tt>978-1-936047-</tt><em>xx</em><tt>-</tt><em>c</em>&rdquo;&mdash;six
+digits of registrant!)  The structure of ISBNs permits parsing
+its fields purely from the number without delimiters.
+</p>
+
+
+<p>
+As one who reads and reviews a lot of books, I find myself
+frequently working with ISBNs.  My site is an Amazon.com
+associate, and to pay the rent, I often need to turn ISBN-13s
+I cite in reviews into ISBN-10s which can be used in Amazon
+links (<em>Hello!</em>  It's been <em>more than ten years</em>, Amazon.
+Gonna fix that one of these days?).  Enter <b>ISBNiser</b>.
+</p>
+
+<p>
+<b>ISBNiser</b> is a command line utility which can be run on
+any system which supports the Perl language.  It accepts
+arguments which can be either ISBN-13s or ISBN-10s, with or
+without delimiters, checks them for validity, and displays the
+ISBN in all valid forms including, if configured, an Amazon
+associate link ready to go <em>ka-ching</em> into your reading
+budget every time a visitor to your site clicks it.
+</p>
+
+<p>
+<b>ISBNiser</b> is run from the command line.  Here is a sample
+query:
+</p>
+
+<pre style="font-size: smaller;">
+$ isbniser.pl -cmyassocacct \
+        0-309-09657-X 0.309.09657.X 1844135438 \
+        9780385611015 978-0-471-64877-2 978.0.471.64877.2 \
+        979-12-200-0852-5 1844135437
+ISBN-10:        0-309-09657-X     030909657X  ISBN-13:  9780309096577     978-0-309-09657-7
+http://www.amazon.com/dp/030909657X/?tag=myassocacct
+ISBN-10:        0.309.09657.X     030909657X  ISBN-13:  9780309096577     978.0.309.09657.7
+http://www.amazon.com/dp/030909657X/?tag=myassocacct
+ISBN-10:        1-84413-543-8     1844135438  ISBN-13:  9781844135431     978-1-84413-543-1
+http://www.amazon.com/dp/1844135438/?tag=myassocacct
+ISBN-13:    978-0-385-61101-5  9780385611015  ISBN-10:     0385611013         0-385-61101-3
+http://www.amazon.com/dp/0385611013/?tag=myassocacct
+ISBN-13:    978-0-471-64877-2  9780471648772  ISBN-10:     0471648779         0-471-64877-9
+http://www.amazon.com/dp/0471648779/?tag=myassocacct
+ISBN-13:    978.0.471.64877.2  9780471648772  ISBN-10:     0471648779         0.471.64877.9
+http://www.amazon.com/dp/0471648779/?tag=myassocacct
+ISBN-13:    979-12-200-0852-5  9791220008525  ISBN-10:     Unmappable
+Invalid ISBN: 1844135437
+</pre>
+
+<p>
+As in this example, you can specify multiple ISBNs in any of the
+accepted formats on the command line.  If an ISBN-13 has a prefix of
+&ldquo;<tt>979</tt>&rdquo;, it cannot be represented as an ISBN-10
+and will be shown as &ldquo;Unmappable&rdquo;.  Invalid ISBNs (those
+which have an invalid check digit, are too long or short, or contain
+invalid characters) will be reported.
+</p>
+
+<p>
+By default, non-alphanumeric delimiters in the ISBNs specified are
+discarded and the same delimiter re-inserted in the ISBN-10 and
+ISBN-13 displayed at the positions determined by parsing the number.
+If the ISBN is invalid or in a format not defined by the standard,
+it will be displayed without delimiters.  The <tt>&minus;p</tt>
+option preserves the original delimiters in the specified ISBN.
+</p>
+
+<p>
+You can control the operation of <b>ISBNiser</b> by specifying the
+following options on the command line.
+</p>
+
+<div class="options">
+<dl class="options">
+    <dt><tt>&minus;a</tt><em>URL</em></dt>
+    <dd>The specified URL will be used in Amazon associate
+        links.  Specify the Amazon site to which you wish the link
+        directed, such as <tt>www.amazon.com</tt>,
+        <tt>www.amazon.co.uk</tt>, <tt>www.amazon.co.jp</tt>, etc.
+        The default Amazon URL is set by the
+        <tt>$Amazon</tt> variable in the program.</dd>
+
+    <dt><tt>&minus;c</tt><em>account</em></dt>
+    <dd>Amazon associate links will credit <em>account</em>
+        for purchases made through them.  The default is set
+        by the <tt>$credit</tt> variable in the program.
+        If the null string is specified, no associate account
+        will be credited.</dd>
+
+    <dt><tt>&minus;d</tt></dt>
+    <dd>Output will be in machine-readable &ldquo;database&rdquo;
+        (CSV: Comma-Separated Value) format, one line per ISBN
+        argument.  See the &ldquo;CSV Format Output&rdquo;
+        section below for details.</dd>
+
+    <dt><tt>&minus;g</tt></dt>
+    <dd>Print the name of the ISBN registration group from
+        the prefix.</dd>
+
+    <dt><tt>&minus;n</tt></dt>
+    <dd>Do not verify subsequent specifications on the command
+        line.  This allows generating Amazon associate links for
+        <a href="https://en.wikipedia.org/wiki/Amazon_Standard_Identification_Number"
+            rel="Target:ISBNiser_Aux">ASIN</a>s
+        which do not verify as ISBNs.</dd>
+
+    <dt><tt>&minus;p</tt></dt>
+    <dd>Preserve the original delimiters in the specified ISBN.
+        Otherwise, delimiters are re-generated automatically by
+        parsing the number.</dd>
+
+    <dt><tt>&minus;r</tt></dt>
+    <dd>Use the alternative Amazon associate account configured
+        as <tt>$creditR</tt> within the program.  You can credit
+        to any account you wish with the <tt>&minus;c</tt>
+        option; this is simply a convenience when you frequently
+        credit to a main and alternative account.</dd>
+
+    <dt><tt>&minus;u</tt> &nbsp; <tt>&minus;&minus;help</tt></dt>
+    <dd>Print how-to-call information.  This information is also
+        printed if the program is called with no arguments.</dd>
+
+    <dt><tt>&minus;v</tt></dt>
+    <dd>Verify subsequent specifications on the command
+        line.  This reverses the effect of a previous
+        <tt>&minus;n</tt> option.</dd>
+
+</dl>
+</div>
+
+<h2>Downloading and Installation</h2>
+
+<p>
+<b>ISBNiser</b> may be downloaded from the following link:
+</p>
+
+<blockquote>
+<p>
+    <b><tt><a href="download/isbniser-1.7.tar.gz">isbniser-1.7.tar.gz</a></tt></b>:
+        Gzipped TAR archive (49 Kb)
+</p>
+</blockquote>
+
+<p>
+Included in the archive are the Perl program
+<b><tt>isbniser</tt></b> as well as
+this document.  You can run the Perl program from directory
+into which you extracted it or install it in a system
+library directory to make it accessible to all users.
+The <b><tt>isbniser</tt></b> program is monolithic and
+requires no other files to run; it may be
+installed anywhere.  It is created automatically from its
+component files under control of the <b><tt>Makefile</tt></b>.
+</p>
+
+<p>
+This program requires no Perl modules; it will work on a base
+installation of Perl.
+</p>
+
+<h2>CSV Format Output</h2>
+
+<p>
+When the <tt>&minus;d</tt> option is specified, output from
+<b>ISBNiser</b> consists of one line per ISBN argument on the
+command line in Comma-Separated Value (CSV) format.  The
+fields are as follows.  Fields which may contain non-alphanumeric
+characters are always enclosed in double quotes.
+</p>
+
+<ol>
+    <li>Status: numeric status
+        <ul>
+            <li><b>200</b> &nbsp; Normal, ISBN-13 and ISBN-10 returned</li>
+            <li><b>201</b> &nbsp; Normal, ISBN-13 returned, 979- unmappable
+                           to ISBN-10</li>
+            <li><b>300</b> &nbsp; Invalid registration group, unhyphenated
+                           ISBN-13 and ISBN-10 returned</li>
+            <li><b>301</b> &nbsp; Invalid registration group, unhyphenated
+                           979- ISBN-13 returned</li>
+            <li><b>401</b> &nbsp; Incorrect length (not 10 or 13 characters)</li>
+            <li><b>402</b> &nbsp; Illegal character</li>
+            <li><b>403</b> &nbsp; &ldquo;<tt>X</tt>&rdquo; as other than last
+                           character of ISBN-10</li>
+            <li><b>404</b> &nbsp; Checksum incorrect</li>
+            <li><b>405</b> &nbsp; ISBN-13 prefix is not Bookland (978 or 979)</li>
+        </ul>
+    </li>
+    <li>ISBN-13, no delimiters</li>
+    <li>ISBN-13, with delimiters (quoted)</li>
+    <li>ISBN-10, no delimiters (&ldquo;<tt>Unmappable</tt>&rdquo;
+        if 979- prefix)</li>
+    <li>ISBN-10, with delimiters (&ldquo;<tt>Unmappable</tt>&rdquo;
+        if 979- prefix) (quoted)</li>
+    <li>Registration group name (quoted)</li>
+    <li>Amazon associates URL (quoted)</li>
+    <li>ISBN Registration group database date (quoted)</li>
+</ol>
+
+
+<p />
+<hr />
+
+<p />
+<blockquote class="rights">
+<p>
+This product (software, documents, and data files) is licensed under a
+Creative Commons
+<a href="https://creativecommons.org/licenses/by-sa/4.0/"
+    rel="Target:ISBNiser_Aux">Attribution-ShareAlike 4.0 International
+License</a>
+<a href="https://creativecommons.org/licenses/by-sa/4.0/legalcode"
+    rel="Target:ISBNiser_Aux">legal text</a>).
+You are free to copy and redistribute this material in any medium or
+format, and to remix, transform, and build upon the material for any
+purpose, including commercially.  You must give credit, provide a link
+to the license, and indicate if changes were made.  If you remix,
+transform, or build upon this material, you must distribute your
+contributions under the same license as the original.
+
+This product is provided with no warranty, either expressed or implied,
+including but not limited to any implied warranties of merchantability
+or fitness for a particular purpose, regarding these materials and is
+made available available solely on an &ldquo;as-is&rdquo; basis.
+</p>
+</blockquote>
+
+<table class="footer">
+<tr>
+<td class="left">
+by <a href="/">John Walker</a><br />
+October, 2021
+</td>
+<td class="right">
+    <table class="buttons">
+    <tr><td>
+    <form id="feedback" method="post" action="/cgi-bin/FeedbackForm.pl">
+    <div>
+    <input type="hidden" name="pagetitle" value="ISBNiser" />
+    <input type="hidden" name="backlink" value="Back to &lt;cite&gt;ISBNiser&lt;/cite&gt;" />
+    <input type="submit" value=" Send Feedback " />
+    </div>
+    </form>
+    </td></tr>
+    <tr><td>
+    <a href="http://validator.w3.org/check?uri=http://www.fourmilab.ch/webtools/isbniser/index.html"
+       rel="Target:Fourmilab_Validation" class="i"><img
+       src="/images/icons/valid-xhtml10.png"
+       class="border0"
+       alt="Valid XHTML 1.0" height="31" width="88" /></a>
+
+    &nbsp;
+
+     <a href="https://jigsaw.w3.org/css-validator/validator?uri=http%3A%2F%2Fwww.fourmilab.ch%2Fwebtools%2Fisbniser%2Findex.html&amp;profile=css3svg&amp;usermedium=all&amp;warning=1&amp;vextwarning=&amp;lang=en"
+       rel="Target:Fourmilab_Validation" class="i"><img
+       src="/images/icons/vcss.png"
+       class="border0"
+       alt="Valid CSS"  height="31" width="88" /></a>
+    </td></tr>
+   </table>
+</td>
+</tr>
+</table>
+
+<h3><a href="/">Fourmilab Home Page</a></h3>
+
+</body>
+</html>

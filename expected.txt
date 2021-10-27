@@ -1,0 +1,36 @@
+ISBN-10:        0-309-09657-X     030909657X  ISBN-13:  9780309096577     978-0-309-09657-7
+http://www.amazon.com/dp/030909657X/?tag=myassocacct
+ISBN-10:        0.309.09657.X     030909657X  ISBN-13:  9780309096577     978.0.309.09657.7
+http://www.amazon.com/dp/030909657X/?tag=myassocacct
+ISBN-10:           1844135438     1844135438  ISBN-13:  9781844135431         9781844135431
+http://www.amazon.com/dp/1844135438/?tag=myassocacct
+ISBN-13:        9780385611015  9780385611015  ISBN-10:     0385611013            0385611013
+http://www.amazon.com/dp/0385611013/?tag=myassocacct
+ISBN-13:    978-0-471-64877-2  9780471648772  ISBN-10:     0471648779         0-471-64877-9
+http://www.amazon.com/dp/0471648779/?tag=myassocacct
+ISBN-13:    978.0.471.64877.2  9780471648772  ISBN-10:     0471648779         0.471.64877.9
+http://www.amazon.com/dp/0471648779/?tag=myassocacct
+ISBN-13:    979-12-200-0852-5  9791220008525  ISBN-10:     Unmappable            Unmappable
+Invalid ISBN: 1844135437
+ISBN-10:        0-309-09657-X     030909657X  ISBN-13:  9780309096577     978-0-309-09657-7
+http://www.amazon.com/dp/030909657X/?tag=myassocacct
+ISBN-10:        0.309.09657.X     030909657X  ISBN-13:  9780309096577     978.0.309.09657.7
+http://www.amazon.com/dp/030909657X/?tag=myassocacct
+ISBN-10:        1-84413-543-8     1844135438  ISBN-13:  9781844135431     978-1-84413-543-1
+http://www.amazon.com/dp/1844135438/?tag=myassocacct
+ISBN-13:    978-0-385-61101-5  9780385611015  ISBN-10:     0385611013         0-385-61101-3
+http://www.amazon.com/dp/0385611013/?tag=myassocacct
+ISBN-13:    978-0-471-64877-2  9780471648772  ISBN-10:     0471648779         0-471-64877-9
+http://www.amazon.com/dp/0471648779/?tag=myassocacct
+ISBN-13:    978.0.471.64877.2  9780471648772  ISBN-10:     0471648779         0.471.64877.9
+http://www.amazon.com/dp/0471648779/?tag=myassocacct
+ISBN-13:    979-12-200-0852-5  9791220008525  ISBN-10:     Unmappable            Unmappable
+Invalid ISBN: 1844135437
+200,9780309096577,"978-0-309-09657-7",030909657X,"0-309-09657-X","English language","http://www.amazon.com/dp/030909657X/?tag=myassocacct","Wed, 27 Oct 2021 15:42:34 BST"
+200,9780309096577,"978.0.309.09657.7",030909657X,"0.309.09657.X","English language","http://www.amazon.com/dp/030909657X/?tag=myassocacct","Wed, 27 Oct 2021 15:42:34 BST"
+200,9781844135431,"978-1-84413-543-1",1844135438,"1-84413-543-8","English language","http://www.amazon.com/dp/1844135438/?tag=myassocacct","Wed, 27 Oct 2021 15:42:34 BST"
+200,9780385611015,"978-0-385-61101-5",0385611013,"0-385-61101-3","English language","http://www.amazon.com/dp/0385611013/?tag=myassocacct","Wed, 27 Oct 2021 15:42:34 BST"
+200,9780471648772,"978-0-471-64877-2",0471648779,"0-471-64877-9","English language","http://www.amazon.com/dp/0471648779/?tag=myassocacct","Wed, 27 Oct 2021 15:42:34 BST"
+200,9780471648772,"978.0.471.64877.2",0471648779,"0.471.64877.9","English language","http://www.amazon.com/dp/0471648779/?tag=myassocacct","Wed, 27 Oct 2021 15:42:34 BST"
+201,9791220008525,"979-12-200-0852-5",Unmappable,"Unmappable","Italy","","Wed, 27 Oct 2021 15:42:34 BST"
+404,,"",,"","","","Wed, 27 Oct 2021 15:42:34 BST"
